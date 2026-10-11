@@ -1,0 +1,20 @@
+# Start small; increase num_documents after inspecting a first run.
+[data]
+dataset_id = "HuggingFaceFW/fineweb-2"
+subset = "rus_Cyrl"
+split = "train"
+text_column = "text"
+num_documents = 100
+seed = 42
+shuffle_buffer_size = 100
+# revision = "<dataset commit SHA>"  # Set this to fix the data version.
+
+[tokenizer]
+vocab_size = 8000
+min_frequency = 2
+special_tokens = ["<|endoftext|>"]
+show_progress = true
+
+[output]
+# Relative to the working directory. Choose a fresh directory for each run.
+directory = "artifacts/tokenization/fineweb2-rus-bpe-8k"

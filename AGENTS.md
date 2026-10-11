@@ -20,10 +20,14 @@ related topics. The goal is understanding and interview preparation.
 
 - Reusable Python code belongs in `src/llm_training/`, grouped by training stage.
 - Freeform explorations belong in the top-level `notebooks/` directory.
-- Store references and short conceptual notes in `docs/`, organized to match
-  the code. Use `docs/note_template.md` as a starting point.
-- Link each Python module to the relevant repository-relative Markdown path in
-  its module docstring. Keep longer source discussions out of Python files.
+- `docs/` documents knowledge and work actually done, not suggestions, plans,
+  or exercises. Create or expand knowledge docs only on direct user request.
+- Do not create speculative notes just because a topic was discussed or researched.
+- Put requested examples and exercises in notebooks, with supporting references
+  in their Markdown cells until documentation is explicitly requested.
+- When docs are requested, organize them to match the code and use
+  `docs/note_template.md` as a starting point. Link modules to existing relevant
+  notes in docstrings; do not create documentation just to supply a link.
 - Record source URLs, the ideas used, implementation differences, and open
   questions. Distinguish reported results from locally observed results.
 - Defer experiment-tracking infrastructure until an actual experiment needs it.
