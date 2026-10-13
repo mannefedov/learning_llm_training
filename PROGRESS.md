@@ -84,6 +84,41 @@ Update this log before pushing work.
 - **Publishing:** User requested pushing to `origin/main` without artifacts.
   Large-file storage decisions are deferred to a future session.
 
+## 2026-10-13 — Small GPT pretraining implementation
+
+- **Changes:** Added a pure-PyTorch GPT-style model with explicit causal
+  attention, learned positions, pre-normalized blocks, GELU, and tied weights.
+  Added EOS document packing, shifted-target random batches, a single-device
+  AdamW loop, validation loss, checkpoint saving, and a TOML-driven CLI using
+  the existing FineWeb2 iterator and trained tokenizer. Included sampling from
+  checkpoints in the root README; no knowledge docs were created.
+- **Reference:** https://github.com/karpathy/build-nanogpt — architecture and
+  training-loop inspiration. This does not load or reproduce GPT-2 checkpoints.
+- **Verification:** Four tiny CPU tests passed: future-token masking, EOS and
+  target alignment, loss reduction on a toy sequence, and a two-step local
+  config run with checkpoint reload and generation. CLI help, TOML parsing,
+  and diff whitespace checked. The local tokenizer has 8,000 tokens and EOS ID 0.
+- **Left for the user:** Install `.[pretraining]`, run the FineWeb2 config,
+  inspect train/validation losses, and sample text. No remote data or substantial
+  training was run. Start with five updates before increasing the budget.
+- **Current limits:** Full precision and in-memory token samples; constant
+  learning rate; end-of-run checkpoint only; no automatic resume. Artifacts stay
+  ignored and large-file storage is still deferred.
+
+## 2026-10-13 — Publish initial pretraining implementation
+
+- **User observation:** The user reported running training. Loss values and
+  generated samples have not been reviewed in this session.
+- **Changes being pushed:** GPT model, pretraining data and training functions,
+  CLI, example TOML config, offline tests, and root README run instructions.
+- **Verification:** The four tiny CPU tests passed during implementation;
+  checked diff whitespace and confirmed `.env` and `artifacts/` are ignored,
+  with no tracked artifacts.
+- **Publishing:** User requested pushing to `origin/main`. Checkpoints and
+  other artifacts remain local; large-file storage is still deferred.
+- **Next hands-on step:** Inspect training and validation losses and sample
+  from the saved checkpoint before choosing the next change.
+
 <!-- Copy for future sessions:
 ## YYYY-MM-DD — Session topic
 

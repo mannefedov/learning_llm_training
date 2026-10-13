@@ -76,3 +76,55 @@ Small offline verification:
 python -m unittest discover -s tests -v
 ```
 
+## Run small GPT pretraining
+
+The model uses explicit causal multi-head attention, learned positions,
+pre-normalized residual blocks, GELU, and tied embedding/output weights. The
+model and optimizer are implemented in PyTorch, with
+[Karpathy's build-nanogpt](https://github.com/karpathy/build-nanogpt) as the
+architecture reference. This is a small GPT-style model trained from random
+weights, not a reproduction of GPT-2's pretrained weights.
+
+From the repo root, with your trained tokenizer already available:
+
+```sh
+python -m pip install -e '.[pretraining]'
+python -m llm_training.pretraining --config configs/pretraining/tiny_gpt.toml
+```
+
+The config selects a small FineWeb2 training sample and a separate `test` sample
+used for validation. Keep any final test set separate when tuning against this
+validation sample. Documents are concatenated with EOS separators and random
+context windows are sampled with targets shifted by one token. The entire
+tokenized sample stays in CPU memory. EOS marks document boundaries but does
+not block attention across them.
+
+The default is four layers, width 128, context 128, batch size 8, and 500
+optimizer steps. Set `steps = 5` and `eval_batches = 1` for your first smoke run.
+It uses full precision, constant learning rate, AdamW, and gradient clipping.
+Training loss and validation loss are printed; a tiny run is for checking the
+pipeline, not for producing fluent text. Each invocation starts a new model.
+
+Outputs go under ignored `artifacts/pretraining/`: `checkpoint.pt` (model and
+optimizer states, dimensions, config, and step), `tokenizer.json`, and
+`config.toml`. Choose a fresh output directory for each run. Checkpoints are
+saved at the end; automatic resume and periodic saving are not implemented yet.
+
+To sample from a saved checkpoint in a notebook or script:
+
+```python
+import torch
+from tokenizers import Tokenizer
+from llm_training.models.gpt import GPT, GPTConfig
+
+run_dir = "artifacts/pretraining/tiny-gpt-run-01"
+checkpoint = torch.load(f"{run_dir}/checkpoint.pt", map_location="cpu", weights_only=True)
+model = GPT(GPTConfig(**checkpoint["model_config"]))
+model.load_state_dict(checkpoint["model"])
+model.eval()
+tokenizer = Tokenizer.from_file(f"{run_dir}/tokenizer.json")
+prompt = torch.tensor([tokenizer.encode("Привет", add_special_tokens=False).ids])
+generated = model.generate(prompt, max_new_tokens=50, temperature=0.8)
+print(tokenizer.decode(generated[0].tolist()))
+```
+

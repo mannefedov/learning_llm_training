@@ -1,0 +1,35 @@
+[data]
+dataset_id = "HuggingFaceFW/fineweb-2"
+subset = "rus_Cyrl"
+train_split = "train"
+val_split = "test"
+train_documents = 1000
+val_documents = 100
+seed = 42
+shuffle_buffer_size = 100
+# revision = "<dataset commit SHA>"
+
+[tokenizer]
+path = "artifacts/tokenization/fineweb2-rus-bpe-8k/tokenizer.json"
+eos_token = "<|endoftext|>"
+
+[model]
+# Vocabulary size comes from the actual tokenizer.
+context_length = 128
+n_layers = 4
+n_heads = 4
+d_model = 128
+
+[training]
+steps = 500
+batch_size = 8
+learning_rate = 0.0003
+weight_decay = 0.1
+grad_clip = 1.0
+eval_every = 50
+eval_batches = 10
+seed = 42
+device = "auto"  # CUDA, then MPS, then CPU; or specify "cpu" / "cuda".
+
+[output]
+directory = "artifacts/pretraining/tiny-gpt-run-01"
