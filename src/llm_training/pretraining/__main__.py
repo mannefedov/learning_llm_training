@@ -20,7 +20,8 @@ def train_from_config(config_path: Path) -> Path:
     from llm_training.models.gpt import GPT, GPTConfig
     from llm_training.tokenization.data import iter_dataset_texts
     from .data import encode_documents
-    from .train import TrainConfig, train
+    from .train import TrainConfig, choose_device, train
+    from .tracking import environment_metadata, log_run
 
     config_text = config_path.read_text(encoding="utf-8")
     config = tomllib.loads(config_text)
@@ -41,35 +42,44 @@ def train_from_config(config_path: Path) -> Path:
     val_split = data_config.pop("val_split")
     if train_split == val_split:
         raise ValueError("Use separate document splits for training and validation")
-    print("Preparing training tokens...")
-    train_tokens = encode_documents(iter_dataset_texts(
-        **data_config, split=train_split, num_documents=train_documents
-    ), tokenizer, eos_token)
-    print("Preparing validation tokens...")
-    val_tokens = encode_documents(iter_dataset_texts(
-        **data_config, split=val_split, num_documents=val_documents
-    ), tokenizer, eos_token)
-    for name, tokens in (("train", train_tokens), ("validation", val_tokens)):
-        if tokens.numel() <= model_config.context_length:
-            raise ValueError(f"{name} data needs at least context_length + 1 tokens")
-    print(f"Tokens: train={train_tokens.numel():,}; validation={val_tokens.numel():,}")
-
     torch.manual_seed(train_config.seed)
     model = GPT(model_config)
-    optimizer = train(model, train_tokens, val_tokens, train_config)
-
     output_dir.mkdir(parents=True, exist_ok=False)
-    checkpoint_path = output_dir / "checkpoint.pt"
-    torch.save({
-        "model": model.state_dict(),
-        "model_config": asdict(model_config),
-        "optimizer": optimizer.state_dict(),
-        "step": train_config.steps,
-        "config": config,
-    }, checkpoint_path)
-    tokenizer.save(str(output_dir / "tokenizer.json"))
     (output_dir / "config.toml").write_text(config_text, encoding="utf-8")
-    print(f"Saved checkpoint to {checkpoint_path}")
+    tokenizer_path = output_dir / "tokenizer.json"
+    tokenizer.save(str(tokenizer_path))
+    metadata = {
+        **environment_metadata(tokenizer_path),
+        "run_name": output_dir.name,
+        "model_config": asdict(model_config),
+        "training_config": asdict(train_config),
+        "data_config": config["data"],
+        "device": str(choose_device(train_config.device)),
+        "parameter_count": sum(p.numel() for p in model.parameters()),
+    }
+    checkpoint_path = output_dir / "checkpoint.pt"
+    with log_run(output_dir, metadata) as record_metrics:
+        print("Preparing training tokens...")
+        train_tokens = encode_documents(iter_dataset_texts(
+            **data_config, split=train_split, num_documents=train_documents
+        ), tokenizer, eos_token)
+        print("Preparing validation tokens...")
+        val_tokens = encode_documents(iter_dataset_texts(
+            **data_config, split=val_split, num_documents=val_documents
+        ), tokenizer, eos_token)
+        for name, tokens in (("train", train_tokens), ("validation", val_tokens)):
+            if tokens.numel() <= model_config.context_length:
+                raise ValueError(f"{name} data needs at least context_length + 1 tokens")
+        print(f"Tokens: train={train_tokens.numel():,}; validation={val_tokens.numel():,}")
+        optimizer = train(model, train_tokens, val_tokens, train_config, record_metrics)
+        torch.save({
+            "model": model.state_dict(),
+            "model_config": asdict(model_config),
+            "optimizer": optimizer.state_dict(),
+            "step": train_config.steps,
+            "config": config,
+        }, checkpoint_path)
+        print(f"Saved checkpoint to {checkpoint_path}")
     return checkpoint_path
 
 

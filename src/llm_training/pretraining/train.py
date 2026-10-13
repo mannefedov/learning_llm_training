@@ -4,6 +4,7 @@ Training reference: https://github.com/karpathy/build-nanogpt
 """
 
 from dataclasses import dataclass
+from collections.abc import Callable
 
 import torch
 
@@ -56,7 +57,13 @@ def evaluate(model: GPT, tokens: torch.Tensor, config: TrainConfig) -> float:
     return total / config.eval_batches
 
 
-def train(model: GPT, train_tokens: torch.Tensor, val_tokens: torch.Tensor, config: TrainConfig):
+def train(
+    model: GPT,
+    train_tokens: torch.Tensor,
+    val_tokens: torch.Tensor,
+    config: TrainConfig,
+    record_metrics: Callable[[int, float | None, float], None] | None = None,
+):
     """Optimize for a fixed number of updates and return the optimizer for saving."""
     device = choose_device(config.device)
     model.to(device)
@@ -73,7 +80,10 @@ def train(model: GPT, train_tokens: torch.Tensor, val_tokens: torch.Tensor, conf
     )
     generator = torch.Generator().manual_seed(config.seed)
     print(f"Device: {device}; parameters: {sum(p.numel() for p in parameters):,}")
-    print(f"step=0 val_loss={evaluate(model, val_tokens, config):.4f}")
+    val_loss = evaluate(model, val_tokens, config)
+    print(f"step=0 val_loss={val_loss:.4f}")
+    if record_metrics is not None:
+        record_metrics(0, None, val_loss)
     for step in range(1, config.steps + 1):
         x, y = get_batch(train_tokens, config.batch_size, model.config.context_length, device, generator)
         optimizer.zero_grad(set_to_none=True)
@@ -86,4 +96,6 @@ def train(model: GPT, train_tokens: torch.Tensor, val_tokens: torch.Tensor, conf
         if step == 1 or step % config.eval_every == 0 or step == config.steps:
             val_loss = evaluate(model, val_tokens, config)
             print(f"step={step} train_loss={loss.item():.4f} val_loss={val_loss:.4f}")
+            if record_metrics is not None:
+                record_metrics(step, loss.item(), val_loss)
     return optimizer

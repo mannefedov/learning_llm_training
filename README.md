@@ -105,10 +105,30 @@ It uses full precision, constant learning rate, AdamW, and gradient clipping.
 Training loss and validation loss are printed; a tiny run is for checking the
 pipeline, not for producing fluent text. Each invocation starts a new model.
 
-Outputs go under ignored `artifacts/pretraining/`: `checkpoint.pt` (model and
-optimizer states, dimensions, config, and step), `tokenizer.json`, and
-`config.toml`. Choose a fresh output directory for each run. Checkpoints are
-saved at the end; automatic resume and periodic saving are not implemented yet.
+Outputs go under ignored `artifacts/pretraining/`. Choose a fresh output
+directory for each run, using a descriptive name in the TOML config:
+
+```text
+<run directory>/
+    config.toml
+    metadata.json
+    metrics.csv
+    tokenizer.json
+    checkpoint.pt
+```
+
+`metadata.json` records timestamps, run status, Git commit and modified-code
+flag, library versions, resolved model/training settings, device, parameter
+count, and tokenizer hash. `metrics.csv` records only the existing console
+values: `step`, `train_loss`, and `val_loss`. Rows follow the existing logging
+cadence; training loss is the current batch loss, not an interval average.
+Step zero has an empty training-loss field. Evaluation settings are unchanged.
+
+Config, tokenizer, and metadata are saved before data preparation; CSV rows
+are flushed during training. Failed or interrupted runs retain their records.
+The checkpoint includes model and optimizer states, dimensions, config, and
+step. It is saved at the end; automatic resume and periodic saving are not
+implemented yet. Earlier runs cannot recover loss history from checkpoints.
 
 To sample from a saved checkpoint in a notebook or script:
 

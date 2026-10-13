@@ -1,7 +1,10 @@
 """Tiny CPU checks; no remote data or substantial training."""
 
 from dataclasses import asdict
+import csv
+import hashlib
 import io
+import json
 from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -14,6 +17,7 @@ from llm_training.models.gpt import GPT, GPTConfig
 from llm_training.pretraining.data import encode_documents, get_batch
 from llm_training.pretraining.train import TrainConfig, train
 from llm_training.pretraining.__main__ import train_from_config
+from llm_training.pretraining.tracking import log_run
 from llm_training.tokenization.bpe import train_byte_level_bpe
 
 
@@ -91,10 +95,40 @@ class PretrainingTests(unittest.TestCase):
             self.assertEqual(asdict(model.config)["vocab_size"], tokenizer.get_vocab_size())
             self.assertTrue((root / "run" / "tokenizer.json").is_file())
             self.assertEqual((root / "run" / "config.toml").read_text(), config.read_text())
+            metadata = json.loads((root / "run" / "metadata.json").read_text())
+            self.assertEqual(metadata["status"], "completed")
+            self.assertEqual(metadata["device"], "cpu")
+            self.assertEqual(metadata["parameter_count"], sum(p.numel() for p in model.parameters()))
+            self.assertEqual(metadata["tokenizer_sha256"], hashlib.sha256(
+                (root / "run" / "tokenizer.json").read_bytes()
+            ).hexdigest())
+            with (root / "run" / "metrics.csv").open(newline="") as file:
+                rows = list(csv.DictReader(file))
+            self.assertEqual([int(row["step"]) for row in rows], [0, 1, 2])
+            self.assertEqual(rows[0]["train_loss"], "")
+            self.assertTrue(all(float(row["val_loss"]) > 0 for row in rows))
             generated = model.generate(torch.tensor([[1] * 8]), max_new_tokens=3)
             self.assertEqual(generated.shape, (1, 11))
             with self.assertRaises(FileExistsError):
                 train_from_config(config)
+
+    def test_failed_or_interrupted_run_keeps_flushed_metrics(self):
+        for error, status in ((RuntimeError("test failure"), "failed"),
+                              (KeyboardInterrupt(), "interrupted")):
+            with self.subTest(status=status), TemporaryDirectory() as temporary:
+                output = Path(temporary)
+                with self.assertRaises(type(error)):
+                    with log_run(output, {"run_name": "test"}) as record:
+                        record(0, None, 3.5)
+                        # The row is readable before the context manager closes.
+                        with (output / "metrics.csv").open(newline="") as file:
+                            self.assertEqual(len(list(csv.DictReader(file))), 1)
+                        raise error
+                metadata = json.loads((output / "metadata.json").read_text())
+                self.assertEqual(metadata["status"], status)
+                self.assertIn("finished_at", metadata)
+                with (output / "metrics.csv").open(newline="") as file:
+                    self.assertEqual(list(csv.DictReader(file))[0]["val_loss"], "3.5")
 
 
 if __name__ == "__main__":

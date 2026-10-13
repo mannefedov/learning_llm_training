@@ -119,6 +119,30 @@ Update this log before pushing work.
 - **Next hands-on step:** Inspect training and validation losses and sample
   from the saved checkpoint before choosing the next change.
 
+## 2026-10-13 — Local run records
+
+- **Changes:** Added `metrics.csv` for the existing step/train-loss/validation-loss
+  output and `metadata.json` for timestamps, status, Git state, versions, resolved
+  settings, device, parameter count, and tokenizer hash. Run folders now save
+  config and tokenizer before data preparation; each CSV row is flushed so
+  records survive Python exceptions or keyboard interruption.
+- **Scope:** No new metrics, evaluation changes, plotting dependencies, or
+  external tracking services. Evaluation design and comparison plots are deferred.
+- **Verification:** Five small CPU tests passed, including CSV rows and metadata
+  from a two-step local run, checkpoint reload, and preserving records on failure
+  or interruption. Diff whitespace checked; no remote data or substantial training.
+- **Left for the user:** Use a fresh output directory in each run config. New
+  runs record their existing losses; previous checkpoints have no loss history.
+
+## 2026-10-13 — Publish local run tracking
+
+- **Changes being pushed:** CSV loss logging, JSON run metadata, runner
+  integration, offline tests, and root README usage details.
+- **Verification:** Five tiny CPU tests passed during implementation; checked
+  diff whitespace and confirmed artifacts and `.env` remain ignored and untracked.
+- **Publishing:** User requested pushing to `origin/main`. Run files stay local.
+- **Next steps:** Decide evaluation metrics and design comparison plots.
+
 <!-- Copy for future sessions:
 ## YYYY-MM-DD — Session topic
 
