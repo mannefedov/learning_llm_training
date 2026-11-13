@@ -13,7 +13,7 @@ import mlx.optimizers as optim
 from mlx.utils import tree_flatten
 
 from llm_training.models.gpt_mlx import GPT
-from .data import get_batch
+from .data import get_batch, sequential_batch
 from llm_training.pretraining.progress import TrainingProgress
 
 
@@ -28,8 +28,11 @@ class TrainConfig:
     eval_batches: int = 10
     seed: int = 42
     device: str = "auto"
+    sampling: str = "random"
 
     def __post_init__(self):
+        if self.sampling not in ("random", "sequential"):
+            raise ValueError("sampling must be random or sequential")
         if min(self.steps, self.batch_size, self.eval_every, self.eval_batches) < 1:
             raise ValueError("Training steps and batch counts must be positive")
         if self.learning_rate <= 0 or self.grad_clip <= 0 or self.weight_decay < 0:
@@ -72,6 +75,9 @@ def evaluate(model: GPT, tokens, config: TrainConfig) -> float:
 def train(model: GPT, train_tokens, val_tokens, config: TrainConfig,
           record_metrics: Callable[[int, float | None, float], None] | None = None,
           record_samples: Callable[[int], None] | None = None):
+    full_batches = (train_tokens.size - 1) // (config.batch_size * model.config.context_length)
+    if config.sampling == "sequential" and config.steps > full_batches:
+        raise ValueError(f"Only {full_batches} sequential batches available; reduce steps or prepare a larger cache")
     mx.set_default_device(choose_device(config.device))
     model.train()
     optimizer = MatrixAdamW(learning_rate=config.learning_rate, betas=[0.9, 0.95],
@@ -88,7 +94,10 @@ def train(model: GPT, train_tokens, val_tokens, config: TrainConfig,
         if record_samples is not None:
             record_samples(0)
         for step in range(1, config.steps + 1):
-            x, y = get_batch(train_tokens, config.batch_size, model.config.context_length, generator)
+            if config.sampling == "sequential":
+                x, y = sequential_batch(train_tokens, config.batch_size, model.config.context_length, step - 1)
+            else:
+                x, y = get_batch(train_tokens, config.batch_size, model.config.context_length, generator)
             loss, gradients = loss_and_grad(model, x, y)
             if not mx.isfinite(loss).item():
                 raise RuntimeError(f"Non-finite loss at step {step}")

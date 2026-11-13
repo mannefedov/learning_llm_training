@@ -16,6 +16,28 @@ Edit `[model]` for dimensions and `[training]` for steps, batch size, and learni
 rate. A quick check uses `steps = 5` and `eval_batches = 1`.
 `device = "auto"` selects Metal when available; `"gpu"` and `"cpu"` are explicit choices.
 
+## Sequential training with a disk cache
+
+Use this config for a fixed 200,000-step budget without random window sampling:
+
+```sh
+python -m llm_training.pretraining_mlx.prepare --config configs/pretraining/sequential_gpt_mlx.toml
+python -m llm_training.pretraining_mlx --config configs/pretraining/sequential_gpt_mlx.toml
+```
+
+Preparation streams documents in order until it writes
+`steps × batch_size × context_length + 1` token IDs. The document count is an
+upper limit; the last document can be cut short. At 200k steps, batch 10, context
+256, the training token file is about 2.05 GB (1.91 GiB), plus validation.
+
+When preparation prints `Cache ready`, the cache is complete.
+
+Training reads sequential batches from memory-mapped files, with no wrapping.
+Validation keeps fixed random windows from its separate cached split. Repeated
+runs reuse the cache without fetching the corpus again. The manifest records the
+actual document/token counts and tokenizer identity. If preparation is interrupted,
+choose a new `[cache].directory`; incomplete caches are not reused.
+
 ## Samples during training
 
 The optional `[generation]` table is enabled by default:

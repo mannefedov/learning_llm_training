@@ -13,6 +13,7 @@ dependencies = []
 [project.optional-dependencies]
 analysis = ["matplotlib>=3.8"]
 pretraining-mlx = [
+    "numpy>=1.26",
     "mlx>=0.31,<0.33",
     "tokenizers==0.22.2",
     "datasets>=3",

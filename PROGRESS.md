@@ -369,3 +369,71 @@ Update this log before pushing work.
 - **Left for user / next steps:** Continue the active run, inspect samples, and
   refresh loss plots. Existing training artifacts and `.env` remain untracked.
 - **Publishing:** User requested committing and pushing to `origin/main`.
+
+## 2026-11-13 — Fixed-budget sequential disk corpus
+
+- **Decision:** Keep 200,000 optimizer steps, batch 10, context 256. Prepare only
+  the required 512,000,001 token IDs (512 million targets), with 20 million
+  document records as an upper limit. Documents are streamed in source order;
+  the final document may be truncated. Do not fetch 20 million documents merely
+  to leave most unused, and do not random-resample training windows.
+- **Changes:** Added a disk preparation CLI and separate sequential MLX config.
+  Writes little-endian uint32 train/validation token files and a completion
+  manifest; memory-maps them read-only and converts only batches to MLX arrays.
+  Sequential batching visits each target position once without wrapping.
+  Existing random/in-memory training remains available. Validation uses the
+  existing fixed random windows, drawn from a separate cached split.
+- **Cache behavior:** Reuses complete compatible caches without fetching data.
+  Checks tokenizer hash/version, source settings, and file sizes; records actual
+  documents/tokens and final-document truncation. Incomplete or undersized caches
+  fail explicitly. No preparation resume; choose a new cache directory after an
+  interruption. Metadata records cache identity/counts. Declared NumPy directly
+  in the MLX extra (already installed transitively).
+- **Verification:** All 30 offline tests passed, including stopping at budget,
+  stream cleanup, cache reuse/mismatch/corruption, incomplete-source failure,
+  exact sequential target coverage, memmap validation batches, and two-step
+  config training with remote fetching forbidden. CLI help, budget arithmetic,
+  syntax, README links, and diff whitespace passed.
+- **Left for user:** Run prepare and training commands from the MLX README with
+  `configs/pretraining/sequential_gpt_mlx.toml`. The train token file will be
+  2,048,000,004 bytes (~1.91 GiB), plus validation. No large data preparation,
+  downloads, or substantial training were run; user's small config edits remain
+  untouched. Inspect printed document/token totals and subsequent loss curves.
+
+## 2026-11-13 — Confirmed Arrow shutdown deadlock after cache preparation
+
+- **Observed:** Inspected the live preparation process without stopping it. A
+  one-second native stack sample showed the main thread in C runtime exit,
+  waiting in `arrow::internal::ThreadPool::Shutdown` from libarrow 26. Python
+  finalization had already completed; earlier explicit iterator cleanup did not
+  prevent this native shutdown deadlock. Stack saved locally under `/private/tmp`.
+- **Cache verified:** Completion manifest exists. Train file has 512,000,001
+  tokens from 432,767 documents (last truncated); validation has 99,372 tokens
+  from 100 documents. Both file sizes exactly match uint32 token counts. No
+  full-file checksum/read or retraining performed.
+- **Changes:** Preparation CLI now prints `Cache ready`, flushes stdout/stderr,
+  and calls `os._exit(0)` after successful main completion, bypassing problematic
+  native finalizers. Imported preparation functions retain normal behavior;
+  exceptions do not enter the success exit path. Scope limited to this CLI.
+  Reference: https://github.com/apache/arrow/issues/45214.
+- **Verification:** Real existing-cache preparation command exited successfully
+  without downloads. Subprocess test confirmed success skips shutdown hooks,
+  while preparation errors retain nonzero exit, traceback, and normal hooks.
+  Diff whitespace checked. A fresh remote streaming preparation was not repeated.
+- **Left for user:** Stop the previously stuck preparation process and start
+  sequential training with the existing complete cache. No rebuild is needed.
+
+## 2026-11-13 — Publish sequential disk-cache training
+
+- **Changes being pushed:** Budget-limited corpus preparation, read-only memmap
+  cache reuse, sequential MLX batching, separate experiment config, metadata,
+  short run instructions, and success-only CLI native-shutdown workaround.
+  Preserved user's small-config change to 200,000 training document records.
+- **Verification:** Full offline suite passed 30 tests before the CLI workaround;
+  the additional subprocess test passed afterward. Existing-cache preparation
+  exited successfully with no download. Final diff whitespace passed. User
+  reports the updated workflow works; no new training outcomes inferred.
+- **Left for user / next step:** Continue sequential training and inspect losses
+  and generated samples. No fresh large preparation or substantial training run
+  was performed by the agent. Caches, checkpoints, and credentials stay ignored.
+- **Publishing:** User requested committing and pushing to `origin/main`.

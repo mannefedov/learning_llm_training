@@ -1,0 +1,48 @@
+[data]
+dataset_id = "HuggingFaceFW/fineweb-2"
+subset = "rus_Cyrl"
+train_split = "train"
+val_split = "test"
+# Upper limit: preparation stops earlier when the token budget is full.
+train_documents = 20000000
+val_documents = 100
+seed = 42
+shuffle_buffer_size = 0
+# revision = "<dataset commit SHA>"
+
+[tokenizer]
+path = "artifacts/tokenization/fineweb2-rus-bpe-8k-02/tokenizer.json"
+eos_token = "<|endoftext|>"
+
+[model]
+# Vocabulary size comes from the actual tokenizer.
+context_length = 256
+n_layers = 4
+n_heads = 4
+d_model = 128
+
+[training]
+sampling = "sequential"
+steps = 200000
+batch_size = 10
+learning_rate = 0.0003
+weight_decay = 0.1
+grad_clip = 1.0
+eval_every = 50
+eval_batches = 10
+seed = 42
+device = "auto"  # Metal GPU, then CPU; or specify "cpu" / "gpu".
+
+[generation]
+enabled = true
+every = 500
+prompts = ["я", "в", "что", "Москва - "]
+max_new_tokens = 100
+temperature = 0.8
+seed = 42
+
+[cache]
+directory = "artifacts/data/fineweb2-rus-512m-tokens"
+
+[output]
+directory = "artifacts/pretraining/gpt-mlx-sequential-512m-01"

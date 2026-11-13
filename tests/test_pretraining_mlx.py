@@ -145,6 +145,57 @@ class PretrainingTests(unittest.TestCase):
             self.assertTrue(checkpoint_path.is_file())
             self.assertTrue(second_checkpoint.is_file())
 
+    def test_sequential_memmap_batches_cover_every_target_once(self):
+        import numpy as np
+        from llm_training.pretraining_mlx.data import sequential_batch
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "tokens.bin"
+            np.arange(17, dtype="<u4").tofile(path)
+            tokens = np.memmap(path, dtype="<u4", mode="r")
+            inputs, targets = [], []
+            for step in range(2):
+                x, y = sequential_batch(tokens, 2, 4, step)
+                self.assertEqual(x.shape, (2, 4))
+                inputs.extend(x.reshape(-1).tolist())
+                targets.extend(y.reshape(-1).tolist())
+            self.assertEqual(inputs, list(range(16)))
+            self.assertEqual(targets, list(range(1, 17)))
+            with self.assertRaises(ValueError):
+                sequential_batch(tokens, 2, 4, 2)
+            x, y = get_batch(tokens, 2, 4, random.Random(42))
+            self.assertTrue(mx.array_equal(y, x + 1).item())
+
+    @patch("llm_training.tokenization.data.iter_dataset_texts")
+    def test_cached_sequential_config_training_needs_no_data_fetch(self, texts):
+        from llm_training.pretraining.token_cache import prepare_cache
+        texts.side_effect = lambda **kwargs: (text for text in ["hello world " * 20])
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tokenizer = train_byte_level_bpe(["hello world"], vocab_size=300, show_progress=False)
+            tokenizer.save(str(root / "tokenizer.json"))
+            source = dict(dataset_id="local", subset="local", train_split="train", val_split="test",
+                          train_documents=20_000_000, val_documents=1, shuffle_buffer_size=0)
+            prepare_cache(root / "cache", source, root / "tokenizer.json", "<|endoftext|>", 17)
+            config = root / "config.toml"
+            config.write_text(
+                '[data]\ndataset_id="local"\nsubset="local"\ntrain_split="train"\n'
+                'val_split="test"\ntrain_documents=20000000\nval_documents=1\nshuffle_buffer_size=0\n'
+                f'[tokenizer]\npath="{root}/tokenizer.json"\neos_token="<|endoftext|>"\n'
+                '[model]\ncontext_length=4\nn_layers=1\nn_heads=1\nd_model=8\n'
+                '[training]\nsteps=2\nbatch_size=2\nsampling="sequential"\neval_batches=1\ndevice="cpu"\n'
+                '[generation]\nenabled=false\n'
+                f'[cache]\ndirectory="{root}/cache"\n[output]\ndirectory="{root}/run"\n')
+            texts.side_effect = AssertionError("Training must use the local cache")
+            with redirect_stdout(io.StringIO()):
+                checkpoint = train_from_config(config)
+            self.assertEqual(json.loads(checkpoint.read_text())["step"], 2)
+            metadata = json.loads((checkpoint.parent / "metadata.json").read_text())
+            self.assertEqual(metadata["token_cache"]["train"]["tokens"], 17)
+            self.assertEqual(metadata["training_config"]["sampling"], "sequential")
+            config.write_text(config.read_text().replace("steps=2", "steps=3"))
+            with self.assertRaisesRegex(ValueError, "sequential steps"):
+                train_from_config(config)
+
     def test_generation_eos_and_invalid_inputs(self):
         from unittest.mock import Mock
         from llm_training.pretraining_mlx.generate import generate_text

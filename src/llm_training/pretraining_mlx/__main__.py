@@ -31,8 +31,8 @@ def train_from_config(config_path: Path) -> Path:
     config_text = config_path.read_text(encoding="utf-8")
     config = tomllib.loads(config_text)
     required = {"data", "tokenizer", "model", "training", "output"}
-    if not required <= set(config) or set(config) - required - {"generation"}:
-        raise ValueError("Config requires data, tokenizer, model, training, output; generation is optional")
+    if not required <= set(config) or set(config) - required - {"generation", "cache"}:
+        raise ValueError("Config requires data, tokenizer, model, training, output; generation and cache are optional")
     output_dir = Path(config["output"]["directory"])
     tokenizer = Tokenizer.from_file(config["tokenizer"]["path"])
     model_config = GPTConfig(vocab_size=tokenizer.get_vocab_size(), **config["model"])
@@ -54,6 +54,28 @@ def train_from_config(config_path: Path) -> Path:
     val_split = data_config.pop("val_split")
     if train_split == val_split:
         raise ValueError("Use separate document splits for training and validation")
+    cached_tokens = None
+    if "cache" in config:
+        from llm_training.pretraining.token_cache import cache_identity, open_cache
+        identity = cache_identity(config["data"], Path(config["tokenizer"]["path"]), eos_token)
+        cache_dir = Path(config["cache"]["directory"])
+        if not (cache_dir / "manifest.json").exists():
+            raise FileNotFoundError("Prepare the token cache first: python -m "
+                                    f"llm_training.pretraining_mlx.prepare --config {config_path}")
+        train_array, val_array, cache_manifest = open_cache(cache_dir, identity)
+        cached_tokens = train_array, val_array
+    if train_config.sampling == "sequential" and cached_tokens is None:
+        raise ValueError("Sequential training requires a prepared [cache] directory")
+    if cached_tokens is not None:
+        train_tokens, val_tokens = cached_tokens
+        token_budget = train_config.batch_size * model_config.context_length
+        available_steps = (train_tokens.size - 1) // token_budget
+        if train_config.sampling == "sequential":
+            if train_config.steps > available_steps:
+                raise ValueError(f"Only {available_steps:,} full sequential steps available")
+            covered = train_config.steps * token_budget
+            print(f"Sequential coverage: {covered:,}/{train_tokens.size - 1:,} target tokens "
+                  f"({covered / (train_tokens.size - 1):.2%}); full pass: {available_steps:,} steps")
     mx.set_default_device(choose_device(train_config.device))
     mx.random.seed(train_config.seed)
     model = GPT(model_config)
@@ -73,16 +95,21 @@ def train_from_config(config_path: Path) -> Path:
         "device": "gpu" if choose_device(train_config.device) == mx.gpu else "cpu",
         "parameter_count": sum(p.size for _, p in tree_flatten(model.parameters())),
     }
+    if cached_tokens is not None:
+        metadata["token_cache"] = {"directory": str(cache_dir.resolve()), **cache_manifest}
     checkpoint_path = output_dir / "checkpoint.json"
     with log_run(output_dir, metadata) as record_metrics:
-        print("Preparing training tokens...")
-        train_tokens = encode_documents(iter_dataset_texts(
-            **data_config, split=train_split, num_documents=train_documents
-        ), tokenizer, eos_token)
-        print("Preparing validation tokens...")
-        val_tokens = encode_documents(iter_dataset_texts(
-            **data_config, split=val_split, num_documents=val_documents
-        ), tokenizer, eos_token)
+        if cached_tokens is not None:
+            train_tokens, val_tokens = cached_tokens
+        else:
+            print("Preparing training tokens...")
+            train_tokens = encode_documents(iter_dataset_texts(
+                **data_config, split=train_split, num_documents=train_documents
+            ), tokenizer, eos_token)
+            print("Preparing validation tokens...")
+            val_tokens = encode_documents(iter_dataset_texts(
+                **data_config, split=val_split, num_documents=val_documents
+            ), tokenizer, eos_token)
         for name, tokens in (("train", train_tokens), ("validation", val_tokens)):
             if tokens.size <= model_config.context_length:
                 raise ValueError(f"{name} data needs at least context_length + 1 tokens")

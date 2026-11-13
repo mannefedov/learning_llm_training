@@ -34,6 +34,9 @@ python -m llm_training.pretraining_mlx --config configs/pretraining/tiny_gpt_mlx
 The terminal shows progress, losses, elapsed time, and ETA. Generated samples
 are saved periodically to `samples.txt` in the printed run directory.
 
+For a larger corpus without keeping token arrays in RAM, use the
+[sequential disk-cache workflow](src/llm_training/pretraining_mlx/README.md#sequential-training-with-a-disk-cache).
+
 **4. Generate text**
 
 Use the completed run directory printed by step 3:
