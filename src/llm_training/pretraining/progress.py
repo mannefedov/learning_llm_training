@@ -19,9 +19,11 @@ class TrainingProgress:
     sampling. It excludes data preparation and final checkpoint writing.
     """
 
-    def __init__(self, total: int):
+    def __init__(self, total: int, start_step: int = 0, steps_per_epoch: int | None = None):
         self.total = total
-        self.step = 0
+        self.steps_per_epoch = steps_per_epoch
+        self.step = start_step
+        self.start_step = start_step
         self.train_loss = None
         self.val_loss = None
         self.stream = sys.stdout
@@ -47,7 +49,8 @@ class TrainingProgress:
     def _display(self, status="training"):
         now = time.monotonic()
         elapsed = now - self.started
-        eta = format_duration(elapsed / self.step * (self.total - self.step)) if self.step else "--:--:--"
+        completed = self.step - self.start_step
+        eta = format_duration(elapsed / completed * (self.total - self.step)) if completed else "--:--:--"
         filled = int(16 * self.step / self.total)
         bar = "#" * filled + "-" * (16 - filled)
         losses = ""
@@ -55,8 +58,10 @@ class TrainingProgress:
             losses += f" train={self.train_loss:.4f}"
         if self.val_loss is not None:
             losses += f" val={self.val_loss:.4f}"
+        epochs = (f" epochs={self.step / self.steps_per_epoch:.2f}/{self.total / self.steps_per_epoch:.2f}"
+                  if self.steps_per_epoch else "")
         line = (f"{status} [{bar}] {100 * self.step / self.total:5.1f}% "
-                f"{self.step}/{self.total} elapsed={format_duration(elapsed)} ETA={eta}{losses}")
+                f"{self.step}/{self.total} elapsed={format_duration(elapsed)} ETA={eta}{epochs}{losses}")
         if self.interactive:
             # Avoid wrapping an updating line on narrow terminals.
             width = max(1, shutil.get_terminal_size().columns - 1)

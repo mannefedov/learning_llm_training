@@ -73,3 +73,11 @@ class TokenCacheTests(unittest.TestCase):
             self.assertFalse((root / "cache/manifest.json").exists())
             with self.assertRaises(FileExistsError):
                 prepare_cache(root / "cache", source, path, "<|endoftext|>", 100)
+            prepare_cache(root / "small-cache", source, path, "<|endoftext|>", 100,
+                          allow_short_train=True)
+            train, _, _ = open_cache(root / "small-cache", cache_identity(source, path, "<|endoftext|>"))
+            self.assertLess(train.size, 100)
+            texts.reset_mock()
+            prepare_cache(root / "small-cache", source, path, "<|endoftext|>", 200,
+                          allow_short_train=True)
+            texts.assert_not_called()

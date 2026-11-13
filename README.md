@@ -65,8 +65,9 @@ while training continues.
 | Post-training | [Current status](src/llm_training/post_training/README.md) |
 
 Configs live in `configs/`; outputs stay under ignored `artifacts/`.
-Existing output directories get a new number automatically. Each training
-invocation starts a new model; checkpoint resume is not implemented.
+Existing output directories get a new number automatically. New runs start
+from random weights; MLX can also
+[resume a saved checkpoint](src/llm_training/pretraining_mlx/README.md#checkpoint-and-resume).
 
 ## Checks
 

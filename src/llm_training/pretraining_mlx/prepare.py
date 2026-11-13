@@ -24,7 +24,8 @@ def main():
     token_limit = (config["training"]["steps"] * config["training"]["batch_size"]
                    * config["model"]["context_length"] + 1)
     prepare_cache(Path(config["cache"]["directory"]), config["data"],
-                  Path(config["tokenizer"]["path"]), config["tokenizer"]["eos_token"], token_limit)
+                  Path(config["tokenizer"]["path"]), config["tokenizer"]["eos_token"], token_limit,
+                  allow_short_train=config["training"].get("sampling", "random") == "sequential")
     print(f"Cache ready: {config['cache']['directory']}", flush=True)
 
 

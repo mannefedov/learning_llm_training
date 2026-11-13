@@ -13,7 +13,7 @@ import mlx.optimizers as optim
 from mlx.utils import tree_flatten
 
 from llm_training.models.gpt_mlx import GPT
-from .data import get_batch, sequential_batch
+from .data import get_batch, sequential_batch, batches_per_epoch
 from llm_training.pretraining.progress import TrainingProgress
 
 
@@ -58,6 +58,11 @@ class MatrixAdamW(optim.AdamW):
         return super().apply_single(gradient, parameter, state)
 
 
+def make_optimizer(config: TrainConfig):
+    return MatrixAdamW(learning_rate=config.learning_rate, betas=[0.9, 0.95],
+                       weight_decay=config.weight_decay, bias_correction=True)
+
+
 def evaluate(model: GPT, tokens, config: TrainConfig) -> float:
     was_training = model.training
     model.eval()
@@ -74,26 +79,30 @@ def evaluate(model: GPT, tokens, config: TrainConfig) -> float:
 
 def train(model: GPT, train_tokens, val_tokens, config: TrainConfig,
           record_metrics: Callable[[int, float | None, float], None] | None = None,
-          record_samples: Callable[[int], None] | None = None):
-    full_batches = (train_tokens.size - 1) // (config.batch_size * model.config.context_length)
-    if config.sampling == "sequential" and config.steps > full_batches:
-        raise ValueError(f"Only {full_batches} sequential batches available; reduce steps or prepare a larger cache")
+          record_samples: Callable[[int], None] | None = None, *,
+          optimizer=None, start_step: int = 0, batch_rng_state=None,
+          record_checkpoint=None):
+    epoch_steps = (batches_per_epoch(train_tokens, config.batch_size, model.config.context_length)
+                   if config.sampling == "sequential" else None)
     mx.set_default_device(choose_device(config.device))
     model.train()
-    optimizer = MatrixAdamW(learning_rate=config.learning_rate, betas=[0.9, 0.95],
-                            weight_decay=config.weight_decay, bias_correction=True)
+    if not 0 <= start_step <= config.steps:
+        raise ValueError("start_step must be within the training budget")
+    optimizer = make_optimizer(config) if optimizer is None else optimizer
     loss_and_grad = nn.value_and_grad(model, lambda model, x, y: model(x, y)[1])
     generator = random.Random(config.seed)
+    if batch_rng_state is not None:
+        generator.setstate(batch_rng_state)
     count = sum(p.size for _, p in tree_flatten(model.parameters()))
     print(f"Device: {mx.default_device()}; parameters: {count:,}")
-    with TrainingProgress(config.steps) as progress:
+    with TrainingProgress(config.steps, start_step=start_step, steps_per_epoch=epoch_steps) as progress:
         val_loss = evaluate(model, val_tokens, config)
-        progress.update(0, val_loss=val_loss)
+        progress.update(start_step, val_loss=val_loss)
         if record_metrics is not None:
-            record_metrics(0, None, val_loss)
+            record_metrics(start_step, None, val_loss)
         if record_samples is not None:
-            record_samples(0)
-        for step in range(1, config.steps + 1):
+            record_samples(start_step)
+        for step in range(start_step + 1, config.steps + 1):
             if config.sampling == "sequential":
                 x, y = sequential_batch(train_tokens, config.batch_size, model.config.context_length, step - 1)
             else:
@@ -105,6 +114,8 @@ def train(model: GPT, train_tokens, val_tokens, config: TrainConfig,
             optimizer.update(model, gradients)
             # MLX is lazy: materialize updates each step to bound the graph and memory.
             mx.eval(model.parameters(), optimizer.state)
+            if record_checkpoint is not None:
+                record_checkpoint(step, optimizer, generator)
             if step == 1 or step % config.eval_every == 0 or step == config.steps:
                 val_loss = evaluate(model, val_tokens, config)
                 progress.update(step, train_loss=loss.item(), val_loss=val_loss)

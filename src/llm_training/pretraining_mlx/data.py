@@ -44,16 +44,26 @@ def get_batch(tokens: mx.array, batch_size: int, context_length: int,
     return mx.array(batch[:, :-1]), mx.array(batch[:, 1:])
 
 
-def sequential_batch(tokens, batch_size: int, context_length: int, step: int):
-    """Visit each target token once, in order, with one-token overlap for shifting.
+def batches_per_epoch(tokens, batch_size: int, context_length: int) -> int:
+    if batch_size < 1 or context_length < 1 or tokens.ndim != 1:
+        raise ValueError("Expected a one-dimensional corpus and positive batch/context sizes")
+    count = (tokens.size - 1) // (batch_size * context_length)
+    if count < 1:
+        raise ValueError("Sequential corpus needs at least batch_size * context_length + 1 tokens")
+    return count
 
-    Full batches only; the tail smaller than batch_size * context_length is
-    unused. No wrapping or random resampling occurs.
+
+def sequential_batch(tokens, batch_size: int, context_length: int, step: int):
+    """Read the global zero-based step, wrapping after each full sequential pass.
+
+    Windows overlap by one token for shifted targets. A tail smaller than a
+    full batch is unused in each epoch; no padding or random resampling occurs.
     """
+    if step < 0:
+        raise ValueError("Sequential step must be nonnegative")
+    epoch_steps = batches_per_epoch(tokens, batch_size, context_length)
     size = batch_size * context_length
-    start = step * size
-    if step < 0 or batch_size < 1 or context_length < 1 or start + size >= tokens.size:
-        raise ValueError("Sequential batch is outside the corpus")
+    start = (step % epoch_steps) * size
     window = tokens[start:start + size + 1]
     x = window[:-1].reshape(batch_size, context_length)
     y = window[1:].reshape(batch_size, context_length)

@@ -52,6 +52,17 @@ class ProgressTests(unittest.TestCase):
         self.assertNotIn("100.0%", output.getvalue())
         self.assertNotIn("\r", output.getvalue())
 
+    def test_resume_eta_counts_only_new_steps(self):
+        output = io.StringIO()
+        with redirect_stdout(output), patch(
+            "llm_training.pretraining.progress.time.monotonic", return_value=0
+        ) as clock:
+            with TrainingProgress(100, start_step=50, steps_per_epoch=50) as progress:
+                clock.return_value = 30
+                progress.update(60)
+        self.assertIn("60.0% 60/100 elapsed=00:00:30 ETA=00:02:00", output.getvalue())
+        self.assertIn("epochs=1.20/2.00", output.getvalue())
+
     def test_duration(self):
         self.assertEqual(format_duration(3661.9), "01:01:01")
         self.assertEqual(format_duration(0), "00:00:00")

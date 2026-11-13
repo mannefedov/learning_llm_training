@@ -21,7 +21,7 @@ def load_checkpoint(run_dir: Path, device: str = "auto"):
     model.load_weights(str(run_dir / checkpoint["model"]))
     model.eval()
     mx.eval(model.parameters())
-    tokenizer = Tokenizer.from_file(str(run_dir / "tokenizer.json"))
+    tokenizer = Tokenizer.from_file(str(run_dir / checkpoint.get("tokenizer", "tokenizer.json")))
     if tokenizer.get_vocab_size() != model.config.vocab_size:
         raise ValueError("Tokenizer vocabulary does not match the model")
     eos_token = checkpoint["config"]["tokenizer"]["eos_token"]

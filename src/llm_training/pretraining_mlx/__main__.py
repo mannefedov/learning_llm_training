@@ -14,29 +14,30 @@ except ModuleNotFoundError:
     import tomli as tomllib
 
 
-def train_from_config(config_path: Path) -> Path:
+def train_from_config(config_path: Path, resume: Path | None = None) -> Path:
     load_dotenv(Path.cwd() / ".env", override=False)
-    import json
     import mlx.core as mx
     from mlx.utils import tree_flatten
     from tokenizers import Tokenizer
 
     from llm_training.models.gpt_mlx import GPT, GPTConfig
     from llm_training.tokenization.data import iter_dataset_texts
-    from .data import encode_documents
-    from .train import TrainConfig, choose_device, train
+    from .data import encode_documents, batches_per_epoch
+    from .train import TrainConfig, choose_device, train, make_optimizer
     from .tracking import environment_metadata, log_run
     from .sampling import GenerationConfig, log_samples
+    from .checkpoint import CheckpointConfig, CheckpointWriter, restore_checkpoint
 
     config_text = config_path.read_text(encoding="utf-8")
     config = tomllib.loads(config_text)
     required = {"data", "tokenizer", "model", "training", "output"}
-    if not required <= set(config) or set(config) - required - {"generation", "cache"}:
-        raise ValueError("Config requires data, tokenizer, model, training, output; generation and cache are optional")
+    if not required <= set(config) or set(config) - required - {"generation", "cache", "checkpoint"}:
+        raise ValueError("Config requires data, tokenizer, model, training, output; generation, cache, checkpoint are optional")
     output_dir = Path(config["output"]["directory"])
     tokenizer = Tokenizer.from_file(config["tokenizer"]["path"])
     model_config = GPTConfig(vocab_size=tokenizer.get_vocab_size(), **config["model"])
     train_config = TrainConfig(**config["training"])
+    checkpoint_config = CheckpointConfig(**config.get("checkpoint", {}))
     generation_config = GenerationConfig(**config.get("generation", {}))
     eos_token = config["tokenizer"]["eos_token"]
     eos_id = tokenizer.token_to_id(eos_token)
@@ -68,17 +69,21 @@ def train_from_config(config_path: Path) -> Path:
         raise ValueError("Sequential training requires a prepared [cache] directory")
     if cached_tokens is not None:
         train_tokens, val_tokens = cached_tokens
-        token_budget = train_config.batch_size * model_config.context_length
-        available_steps = (train_tokens.size - 1) // token_budget
         if train_config.sampling == "sequential":
-            if train_config.steps > available_steps:
-                raise ValueError(f"Only {available_steps:,} full sequential steps available")
-            covered = train_config.steps * token_budget
-            print(f"Sequential coverage: {covered:,}/{train_tokens.size - 1:,} target tokens "
-                  f"({covered / (train_tokens.size - 1):.2%}); full pass: {available_steps:,} steps")
+            epoch_steps = batches_per_epoch(train_tokens, train_config.batch_size, model_config.context_length)
+            print(f"Sequential training: {epoch_steps:,} steps per epoch; "
+                  f"target {train_config.steps / epoch_steps:.2f} epochs ({train_config.steps:,} steps)")
     mx.set_default_device(choose_device(train_config.device))
     mx.random.seed(train_config.seed)
     model = GPT(model_config)
+    optimizer = make_optimizer(train_config)
+    start_step, batch_rng_state = 0, None
+    cache_signature = cache_manifest if cached_tokens is not None else None
+    if resume is not None:
+        start_step, batch_rng_state = restore_checkpoint(
+            resume, model, optimizer, config, train_config,
+            Path(config["tokenizer"]["path"]), cache_signature)
+        print(f"Resuming from step {start_step:,}; target: {train_config.steps:,}")
     output_dir = create_run_directory(output_dir)
     print(f"Run directory: {output_dir}")
     (output_dir / "config.toml").write_text(config_text, encoding="utf-8")
@@ -91,10 +96,16 @@ def train_from_config(config_path: Path) -> Path:
         "model_config": asdict(model_config),
         "training_config": asdict(train_config),
         "generation_config": asdict(generation_config),
+        "checkpoint_config": asdict(checkpoint_config),
+        "start_step": start_step,
+        "resumed_from": str(resume.resolve()) if resume is not None else None,
         "data_config": config["data"],
         "device": "gpu" if choose_device(train_config.device) == mx.gpu else "cpu",
         "parameter_count": sum(p.size for _, p in tree_flatten(model.parameters())),
     }
+    if train_config.sampling == "sequential":
+        metadata["steps_per_epoch"] = epoch_steps
+        metadata["target_epochs"] = train_config.steps / epoch_steps
     if cached_tokens is not None:
         metadata["token_cache"] = {"directory": str(cache_dir.resolve()), **cache_manifest}
     checkpoint_path = output_dir / "checkpoint.json"
@@ -116,19 +127,11 @@ def train_from_config(config_path: Path) -> Path:
         print(f"Tokens: train={train_tokens.size:,}; validation={val_tokens.size:,}")
         with log_samples(output_dir, model, tokenizer, eos_id,
                          generation_config, train_config.steps) as record_samples:
-            optimizer = train(model, train_tokens, val_tokens, train_config,
-                              record_metrics, record_samples)
-        model.save_weights(str(output_dir / "model.safetensors"))
-        mx.save_safetensors(str(output_dir / "optimizer.safetensors"),
-                            dict(tree_flatten(optimizer.state)))
-        checkpoint_path.write_text(json.dumps({
-            "backend": "mlx",
-            "model": "model.safetensors",
-            "optimizer": "optimizer.safetensors",
-            "model_config": asdict(model_config),
-            "step": train_config.steps,
-            "config": config,
-        }, indent=2) + "\n", encoding="utf-8")
+            writer = CheckpointWriter(output_dir, model, config, train_config,
+                                      checkpoint_config, cache_signature)
+            train(model, train_tokens, val_tokens, train_config, record_metrics, record_samples,
+                  optimizer=optimizer, start_step=start_step, batch_rng_state=batch_rng_state,
+                  record_checkpoint=writer)
         print(f"Saved checkpoint to {checkpoint_path}")
     return checkpoint_path
 
@@ -136,8 +139,10 @@ def train_from_config(config_path: Path) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Pretrain a small GPT model with MLX")
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--resume", type=Path,
+                        help="Run directory or checkpoint.json to restore; steps is the total target")
     args = parser.parse_args()
-    train_from_config(args.config)
+    train_from_config(args.config, resume=args.resume)
 
 
 if __name__ == "__main__":

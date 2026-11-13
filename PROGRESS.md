@@ -487,3 +487,72 @@ Update this log before pushing work.
   and 3:1 loss curves and samples. No substantial training or performance
   benchmark performed by the agent. Training process and local artifacts untouched.
 - **Publishing:** User requested committing and pushing to `origin/main`.
+
+## 2026-11-13 — Bounded MLX checkpoints and resume
+
+- **Changes:** Added `[checkpoint] every=1000, keep=1` defaults to MLX runs.
+  Saves completed step directories with weights, optimizer, config, host batch
+  RNG state, tokenizer hash, and cache identity; the run's checkpoint.json points
+  to the latest complete checkpoint. Publishes new files before pruning older
+  owned step directories. No duplicate final model/optimizer files at run root.
+  `every=0` saves only at the end. Retention is per run, with one extra temporary
+  copy during saves; interrupted Python saves clean their temporary files.
+- **Resume:** `--resume` accepts a run directory or retained checkpoint.json.
+  Restores optimizer/model state, completed step/data position, and batch RNG;
+  validates model/data/tokenizer and optimizer settings before creating output.
+  Steps is the total target; resumed logs go into a new numbered run with source
+  recorded in metadata. ETA counts only newly completed steps. Earlier-format
+  checkpoints remain usable for generation but cannot resume through this CLI.
+- **Verification:** All 38 offline tests passed. Interrupted/resumed mixed-SWA
+  models and optimizer tensors matched uninterrupted CPU runs exactly for both
+  random and sequential sampling. Checked retention 1/2, final-only saving,
+  preserved previous checkpoint after simulated disk-full failure, retained
+  checkpoint generation, incompatible resume rejection, and resumed ETA.
+  CLI help, configs, README links/snippets, and diff whitespace passed.
+- **User follow-up:** Latest local 3:1 checkpoint is format 2 at step 200,000,
+  already the configured target. No further steps remain in this token budget.
+- **Left for user:** New runs use periodic checkpoints; use --resume after an
+  interruption with the original config and a target above the saved step.
+  No substantial training or downloads performed by the agent; active process,
+  user notebook edits, and unrelated config edits preserved. Not committed yet.
+
+## 2026-11-13 — Sequential epochs beyond one corpus pass
+
+- **Changes:** Sequential batches map the global step modulo full batches per
+  epoch, repeating ordered passes until the total step target. Added shared
+  epoch-size validation, startup/metadata epoch counts, and fractional epochs
+  in progress output. Steps remains the only budget setting; no extra epoch
+  config is required. A sub-batch tail is omitted on each pass (the existing
+  512-million-token budget divides exactly, so it has no unused target tail).
+- **Resume:** Completed or interrupted version-2 checkpoints resume in the
+  correct epoch and batch using the saved global step, preserving optimizer
+  state. The same cache can now support a higher total step count.
+- **Preparation:** Sequential preparation accepts document/source limits below
+  the requested token budget and reuses complete smaller caches for multiple
+  epochs. Non-sequential preparation retains the prior short-source error.
+  Existing datasets/caches were not modified; no large downloads performed.
+- **Verification:** All 38 offline tests passed, including wraparound targets,
+  invalid/small corpus checks, a completed one-pass checkpoint resumed into
+  epoch two, and interrupted/resumed CPU models and optimizers matching an
+  uninterrupted run across epoch boundaries. Smaller cache preparation/reuse,
+  epoch progress, and diff whitespace checked.
+- **Left for user / next step:** Set training.steps to 400000 in the 3:1 config,
+  keep the current cache, and resume gpt-mlx-swa-3to1-512m-01 for a second pass.
+  No substantial training started by the agent. Unrelated notebook/config edits
+  preserved. Checkpointing and epoch changes remain uncommitted.
+
+## 2026-11-13 — Publish checkpointing, resume, and epochs
+
+- **Changes being pushed:** Periodic MLX checkpoints with keep=1 default,
+  retention-safe publication, resume validation/restoration, multi-epoch
+  sequential batching/cache reuse, epoch progress, tests, and short instructions.
+  Includes user's 400,000-step 3:1 config, small-config document count change,
+  and existing loss notebook outputs without modifying them.
+- **Verification:** Latest full offline suite passed all 38 tests, including
+  exact interrupted/resumed model/optimizer equivalence across epochs, retention,
+  simulated save failure, and smaller cache reuse. Notebook JSON/code syntax and
+  final diff whitespace checked; training artifacts and credentials excluded.
+- **Left for user / next step:** Continue the second epoch and inspect losses
+  and samples. No substantial training/downloads run by the agent; active process
+  unaffected. PyTorch resume is outside this MLX change.
+- **Publishing:** User requested committing and pushing to `origin/main`.

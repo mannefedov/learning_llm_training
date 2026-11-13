@@ -35,11 +35,12 @@ def open_cache(directory: Path, identity: dict):
 
 
 def prepare_cache(directory: Path, data_config: dict, tokenizer_path: Path,
-                  eos_token: str, train_token_limit: int):
+                  eos_token: str, train_token_limit: int, *, allow_short_train: bool = False):
     """Write documents until the fixed training token budget is filled.
 
     The last training document may be truncated; validation uses its document
-    limit. Publish a manifest only after both splits finish.
+    limit. With allow_short_train, a smaller source becomes a reusable epoch.
+    Publish a manifest only after both splits finish.
 
     Interrupted caches are never silently reused or overwritten. Preparation
     must be restarted in a new directory; resume is not implemented.
@@ -52,7 +53,7 @@ def prepare_cache(directory: Path, data_config: dict, tokenizer_path: Path,
     identity = cache_identity(data_config, tokenizer_path, eos_token)
     if (directory / "manifest.json").exists():
         train_tokens, _, _ = open_cache(directory, identity)
-        if train_tokens.size < train_token_limit:
+        if train_tokens.size < train_token_limit and not allow_short_train:
             raise ValueError("Existing cache is too small for this budget; choose a new cache directory")
         print(f"Reusing token cache: {directory}")
         return
@@ -101,7 +102,7 @@ def prepare_cache(directory: Path, data_config: dict, tokenizer_path: Path,
             texts.close()
         if not count:
             raise ValueError(f"No tokens in {name} data")
-        if token_limit is not None and count < token_limit:
+        if token_limit is not None and count < token_limit and not allow_short_train:
             raise ValueError(f"Document limit/source exhausted: got {count:,} of {token_limit:,} tokens; "
                              "increase train_documents or reduce the training budget and use a new cache directory")
         manifest[name] = {"documents": documents, "tokens": count,

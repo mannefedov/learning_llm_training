@@ -36,6 +36,10 @@ eval_batches = 10
 seed = 42
 device = "auto"  # Metal GPU, then CPU; or specify "cpu" / "gpu".
 
+[checkpoint]
+every = 1000
+keep = 1
+
 [generation]
 enabled = true
 every = 500

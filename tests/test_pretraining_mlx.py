@@ -160,8 +160,13 @@ class PretrainingTests(unittest.TestCase):
                 targets.extend(y.reshape(-1).tolist())
             self.assertEqual(inputs, list(range(16)))
             self.assertEqual(targets, list(range(1, 17)))
+            wrapped_x, wrapped_y = sequential_batch(tokens, 2, 4, 2)
+            self.assertEqual(wrapped_x.reshape(-1).tolist(), list(range(8)))
+            self.assertEqual(wrapped_y.reshape(-1).tolist(), list(range(1, 9)))
             with self.assertRaises(ValueError):
-                sequential_batch(tokens, 2, 4, 2)
+                sequential_batch(tokens, 2, 4, -1)
+            with self.assertRaises(ValueError):
+                sequential_batch(tokens[:8], 2, 4, 0)
             x, y = get_batch(tokens, 2, 4, random.Random(42))
             self.assertTrue(mx.array_equal(y, x + 1).item())
 
@@ -200,8 +205,12 @@ class PretrainingTests(unittest.TestCase):
             self.assertEqual(metadata["token_cache"]["train"]["tokens"], 17)
             self.assertEqual(metadata["training_config"]["sampling"], "sequential")
             config.write_text(config.read_text().replace("steps=2", "steps=3"))
-            with self.assertRaisesRegex(ValueError, "sequential steps"):
-                train_from_config(config)
+            with redirect_stdout(io.StringIO()):
+                continued = train_from_config(config, resume=checkpoint)
+            self.assertEqual(json.loads(continued.read_text())["step"], 3)
+            resumed_metadata = json.loads((continued.parent / "metadata.json").read_text())
+            self.assertEqual(resumed_metadata["steps_per_epoch"], 2)
+            self.assertEqual(resumed_metadata["target_epochs"], 1.5)
 
     def test_generation_eos_and_invalid_inputs(self):
         from unittest.mock import Mock
