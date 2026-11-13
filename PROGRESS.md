@@ -153,3 +153,91 @@ Update this log before pushing work.
 - **Open questions:**
 - **Next hands-on step:**
 -->
+
+## 2026-11-13 — Parallel MLX pretraining on Mac
+
+- **Changes:** Reviewed tokenizer, model, data, training, tracking, CLI, configs,
+  tests, and prior project notes. Added `models/gpt_mlx.py` and
+  `pretraining_mlx/` without modifying the existing PyTorch implementation.
+  Preserved causal attention, learned positions, pre-norm blocks, tanh GELU,
+  tied weights, initialization scales, shifted EOS-packed batches, validation,
+  matrix-only AdamW decay with bias correction, clipping, and metrics cadence.
+  Shared the existing tokenizer, dataset iterator, and CSV/status writer.
+- **Artifacts:** MLX saves model and optimizer Safetensors with a JSON checkpoint
+  manifest, config, tokenizer, metadata, and CSV losses. Added a separate
+  five-step MLX config, optional dependency extra, run and sampling commands.
+  No checkpoint conversion or automatic resume; seeded batches differ between
+  backends because MLX batching uses an independent Python RNG.
+- **References:** https://ml-explore.github.io/mlx/build/html/python/optimizers.html
+  and https://ml-explore.github.io/mlx/build/html/python/nn/_autosummary/mlx.nn.GELU.html
+  for MLX optimizer state, bias correction, and tanh GELU API behavior.
+- **Verification:** Created ignored `.venv` with Python 3.12; installed MLX
+  0.32.4 and PyTorch 2.15.0 for checks. All 18 offline tests passed, including
+  existing tests, MLX toy loss reduction, two-step config/checkpoint reload and
+  generation, deterministic validation, decay filtering, and one Metal GPU
+  update. Identical-weight logits/loss and two clipped optimizer updates agreed
+  with PyTorch within test tolerances. CLI help and diff whitespace passed.
+  MLX runtime checks required running outside the sandbox for Metal access.
+- **Left for the user:** No remote corpus fetch or substantial training was run.
+  Activate `.venv` and run `python -m llm_training.pretraining_mlx --config
+  configs/pretraining/tiny_gpt_mlx.toml` after ensuring the tokenizer exists.
+  Inspect finite train/validation losses and sample the saved model; increase
+  the step budget only after the small run, with a fresh output directory.
+- **Next steps:** Compare actual runs before unifying config validation, ID
+  packing, and run setup. Keep model math and checkpoint handling explicit for
+  each backend until shared behavior is established. No commit or push requested.
+
+## 2026-11-13 — Investigate tokenizer shutdown hang
+
+- **Observation:** User reported the tokenizer prints its final saved message
+  but does not exit. Both output files are written before that message. The
+  original tokenizer process was no longer running when inspected; did not
+  interrupt the user's active MLX pretraining process.
+- **Investigation:** Found matching upstream partial-Parquet-stream shutdown
+  reports: https://github.com/huggingface/datasets/issues/7467 and
+  https://github.com/apache/arrow/issues/45214. This is a likely explanation,
+  not a confirmed stack diagnosis of the user's stopped process.
+- **Changes:** Added explicit bounded-stream iterator closure and garbage
+  collection while Python is still running, including early-close and error
+  paths. Shared data loading means this also applies to both pretraining paths.
+  Did not force process exit, change dependencies, or change corpus sampling.
+- **Verification:** Offline test added for completion, early closure, and invalid
+  text cleanup. Full offline suite passed (19 tests). No remote fetch or full
+  tokenizer retraining; the original shutdown hang has not been reproduced or
+  confirmed resolved. Existing saved tokenizer remains usable.
+- **Next step:** Observe normal shutdown on the next intentional remote run.
+  If the hang persists, inspect that live process's native stack before choosing
+  a dependency workaround. Use a new output directory for a fresh tokenizer run.
+
+## 2026-11-13 — Automatic run directories
+
+- **Changes:** Added a shared exclusive directory allocator to tokenizer,
+  PyTorch pretraining, and MLX pretraining runners. Repeated paths increment
+  trailing numbers (`run-01` to `run-02`); unnumbered names gain `-02`.
+  Existing files/directories are skipped, preserving prior artifacts. Runners
+  print and return the actual paths; metadata uses the allocated run name.
+  Updated README and config guidance. Original requested config copies remain
+  intact; this does not add checkpoint resume.
+- **Verification:** All 21 offline tests passed, including repeated config runs
+  in all three runners, existing-file collisions, and number-width overflow.
+  Diff whitespace passed. No remote fetching or substantial training.
+- **Left for the user / next step:** Rerun the same command after changing steps;
+  inspect the printed run directory. Each invocation starts a new model. Select
+  the newly printed tokenizer path explicitly when using a newly trained tokenizer.
+
+## 2026-11-13 — Commit Mac training implementation
+
+- **User observation:** User reports MLX training works; no loss curves or
+  generated samples reviewed in this session.
+- **Changes committed:** Parallel MLX model and pretraining pipeline, dependency
+  extra, config, checkpoints and sampling instructions; automatic output run
+  numbering in all runners; explicit dataset stream cleanup and offline tests.
+  Preserved user's MLX config settings (5,000 steps, context 256, ten validation
+  batches) and aligned README smoke-run guidance.
+- **Verification:** Latest full offline suite passed all 21 tests, including
+  one Metal update and PyTorch/MLX numerical comparison. Final diff whitespace
+  passed; artifacts, virtual environments, and `.env` remain ignored.
+- **Left for the user:** Substantial training and evaluation; stream-shutdown
+  mitigation remains unconfirmed against the original reported hang.
+- **Next steps:** Inspect real run losses and samples before backend unification.
+- **Publishing:** User requested a local commit; no push requested.

@@ -3,7 +3,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from datasets import IterableDataset
 from tokenizers import Tokenizer
@@ -38,6 +38,34 @@ class TokenizationTests(unittest.TestCase):
             train_byte_level_bpe(["hello"], vocab_size=256)
 
     @patch("llm_training.tokenization.data.load_dataset")
+    def test_stream_closes_on_completion_early_stop_and_invalid_text(self, load):
+        for mode in ("complete", "early", "invalid"):
+            with self.subTest(mode=mode):
+                closed = []
+
+                def records():
+                    try:
+                        yield {"text": 123 if mode == "invalid" else "hello"}
+                        yield {"text": "world"}
+                    finally:
+                        closed.append(True)
+
+                dataset = Mock()
+                dataset.take.return_value = records()
+                load.return_value = dataset
+                texts = iter_dataset_texts(dataset_id="local", subset="example",
+                                          num_documents=2, shuffle_buffer_size=0)
+                if mode == "early":
+                    self.assertEqual(next(texts), "hello")
+                    texts.close()
+                elif mode == "invalid":
+                    with self.assertRaises(TypeError):
+                        list(texts)
+                else:
+                    self.assertEqual(list(texts), ["hello", "world"])
+                self.assertEqual(closed, [True])
+
+    @patch("llm_training.tokenization.data.load_dataset")
     def test_document_limit_and_blank_filtering(self, load):
         load.return_value = IterableDataset.from_generator(tiny_corpus)
         texts = list(iter_dataset_texts(
@@ -51,7 +79,7 @@ class TokenizationTests(unittest.TestCase):
         )
 
     @patch("llm_training.tokenization.data.load_dataset")
-    def test_config_run_saves_reloadable_artifact_and_rejects_overwrite(self, load):
+    def test_config_run_saves_reloadable_artifacts_in_fresh_directories(self, load):
         load.return_value = IterableDataset.from_generator(tiny_corpus)
         with TemporaryDirectory() as temporary:
             output = Path(temporary) / "run"
@@ -68,10 +96,11 @@ class TokenizationTests(unittest.TestCase):
             text = "Unseen 🙂\n"
             self.assertEqual(restored.decode(restored.encode(text).ids), text)
             self.assertEqual((output / "config.toml").read_text(), config_text)
-            load.reset_mock()
-            with self.assertRaises(FileExistsError):
-                train_from_config(config)
-            load.assert_not_called()
+            original = artifact.read_bytes()
+            second_artifact = train_from_config(config)
+            self.assertEqual(second_artifact.parent.name, "run-02")
+            self.assertEqual(artifact.read_bytes(), original)
+            self.assertTrue(second_artifact.is_file())
 
 
 if __name__ == "__main__":

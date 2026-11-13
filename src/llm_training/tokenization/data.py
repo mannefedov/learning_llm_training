@@ -4,6 +4,7 @@ An exploratory example lives in notebooks/01_bpe_fineweb2.ipynb.
 """
 
 from collections.abc import Iterator
+import gc
 
 from datasets import load_dataset
 
@@ -35,9 +36,20 @@ def iter_dataset_texts(
     )
     if shuffle_buffer_size:
         dataset = dataset.shuffle(seed=seed, buffer_size=shuffle_buffer_size)
-    for document in dataset.take(num_documents):
-        text = document[text_column]
-        if not isinstance(text, str):
-            raise TypeError(f"Column {text_column!r} must contain strings")
-        if text.strip():
-            yield text
+    records = iter(dataset.take(num_documents))
+    try:
+        for document in records:
+            text = document[text_column]
+            if not isinstance(text, str):
+                raise TypeError(f"Column {text_column!r} must contain strings")
+            if text.strip():
+                yield text
+    finally:
+        # A bounded sample leaves the underlying Parquet stream partly read.
+        # Release it while Python is fully alive, rather than at interpreter exit:
+        # https://github.com/huggingface/datasets/issues/7467
+        close = getattr(records, "close", None)
+        if close is not None:
+            close()
+        del records, dataset
+        gc.collect()

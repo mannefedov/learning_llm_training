@@ -6,6 +6,8 @@ Usage: python -m llm_training.tokenization --config configs/tokenization/fineweb
 import argparse
 from pathlib import Path
 
+from llm_training.runs import create_run_directory
+
 from dotenv import load_dotenv
 
 try:
@@ -18,7 +20,7 @@ def train_from_config(config_path: Path) -> Path:
     """Train and save a tokenizer and its config in a new output directory.
 
     Relative output paths are resolved against the current working directory.
-    An existing directory is rejected to avoid overwriting a previous run.
+    Existing paths are skipped by incrementing the run directory number.
     """
     # Load credentials before importing the Hugging Face libraries.
     # Already exported environment variables take precedence over .env.
@@ -34,13 +36,12 @@ def train_from_config(config_path: Path) -> Path:
         raise ValueError("The output table must contain only directory")
 
     output_dir = Path(config["output"]["directory"])
-    if output_dir.exists():
-        raise FileExistsError(f"Choose a new output directory: {output_dir}")
 
     texts = iter_dataset_texts(**config["data"])
     tokenizer = train_byte_level_bpe(texts, **config["tokenizer"])
 
-    output_dir.mkdir(parents=True, exist_ok=False)
+    output_dir = create_run_directory(output_dir)
+    print(f"Run directory: {output_dir}")
     tokenizer_path = output_dir / "tokenizer.json"
     tokenizer.save(str(tokenizer_path))
     (output_dir / "config.toml").write_text(config_text, encoding="utf-8")

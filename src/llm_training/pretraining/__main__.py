@@ -4,6 +4,8 @@ import argparse
 from dataclasses import asdict
 from pathlib import Path
 
+from llm_training.runs import create_run_directory
+
 from dotenv import load_dotenv
 
 try:
@@ -28,8 +30,6 @@ def train_from_config(config_path: Path) -> Path:
     if set(config) != {"data", "tokenizer", "model", "training", "output"}:
         raise ValueError("Config must contain data, tokenizer, model, training, and output tables")
     output_dir = Path(config["output"]["directory"])
-    if output_dir.exists():
-        raise FileExistsError(f"Choose a new output directory: {output_dir}")
     tokenizer = Tokenizer.from_file(config["tokenizer"]["path"])
     model_config = GPTConfig(vocab_size=tokenizer.get_vocab_size(), **config["model"])
     train_config = TrainConfig(**config["training"])
@@ -44,7 +44,8 @@ def train_from_config(config_path: Path) -> Path:
         raise ValueError("Use separate document splits for training and validation")
     torch.manual_seed(train_config.seed)
     model = GPT(model_config)
-    output_dir.mkdir(parents=True, exist_ok=False)
+    output_dir = create_run_directory(output_dir)
+    print(f"Run directory: {output_dir}")
     (output_dir / "config.toml").write_text(config_text, encoding="utf-8")
     tokenizer_path = output_dir / "tokenizer.json"
     tokenizer.save(str(tokenizer_path))

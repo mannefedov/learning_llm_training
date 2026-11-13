@@ -16,5 +16,5 @@ special_tokens = ["<|endoftext|>"]
 show_progress = true
 
 [output]
-# Relative to the working directory. Choose a fresh directory for each run.
+# Relative to the working directory. Existing paths get a new run number automatically.
 directory = "artifacts/tokenization/fineweb2-rus-bpe-8k"

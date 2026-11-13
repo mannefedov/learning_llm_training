@@ -109,8 +109,11 @@ class PretrainingTests(unittest.TestCase):
             self.assertTrue(all(float(row["val_loss"]) > 0 for row in rows))
             generated = model.generate(torch.tensor([[1] * 8]), max_new_tokens=3)
             self.assertEqual(generated.shape, (1, 11))
-            with self.assertRaises(FileExistsError):
-                train_from_config(config)
+            with redirect_stdout(io.StringIO()):
+                second_checkpoint = train_from_config(config)
+            self.assertEqual(second_checkpoint.parent.name, "run-02")
+            self.assertTrue(checkpoint_path.is_file())
+            self.assertTrue(second_checkpoint.is_file())
 
     def test_failed_or_interrupted_run_keeps_flushed_metrics(self):
         for error, status in ((RuntimeError("test failure"), "failed"),
