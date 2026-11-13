@@ -4,56 +4,21 @@ MLX reference: https://ml-explore.github.io/mlx/build/html/index.html
 Architecture reference: https://github.com/karpathy/build-nanogpt
 """
 
-from dataclasses import dataclass
 import math
 
 import mlx.core as mx
 import mlx.nn as nn
 from mlx.utils import tree_map_with_path
 
-
-@dataclass
-class GPTConfig:
-    vocab_size: int
-    context_length: int = 128
-    n_layers: int = 4
-    n_heads: int = 4
-    d_model: int = 128
-
-    def __post_init__(self):
-        if min(self.vocab_size, self.context_length, self.n_layers,
-               self.n_heads, self.d_model) < 1:
-            raise ValueError("All model dimensions must be positive")
-        if self.d_model % self.n_heads:
-            raise ValueError("d_model must be divisible by n_heads")
-
-
-class CausalSelfAttention(nn.Module):
-    def __init__(self, config: GPTConfig):
-        super().__init__()
-        self.n_heads = config.n_heads
-        self.qkv = nn.Linear(config.d_model, 3 * config.d_model)
-        self.proj = nn.Linear(config.d_model, config.d_model)
-
-    def __call__(self, x):
-        batch, length, width = x.shape
-        head_size = width // self.n_heads
-        q, k, v = mx.split(self.qkv(x), 3, axis=-1)
-        q, k, v = [a.reshape(batch, length, self.n_heads, head_size)
-                   .transpose(0, 2, 1, 3) for a in (q, k, v)]
-        scores = (q @ k.swapaxes(-2, -1)) / math.sqrt(head_size)
-        causal_mask = mx.arange(length)[:, None] >= mx.arange(length)[None, :]
-        scores = mx.where(causal_mask, scores, -float("inf"))
-        attended = mx.softmax(scores, axis=-1) @ v
-        attended = attended.transpose(0, 2, 1, 3).reshape(batch, length, width)
-        return self.proj(attended)
+from .config import GPTConfig
+from .attention_mlx import CausalSelfAttention, build_attention
 
 
 class Block(nn.Module):
-    def __init__(self, config: GPTConfig):
+    def __init__(self, config: GPTConfig, layer_index: int = 0):
         super().__init__()
         self.attention_norm = nn.LayerNorm(config.d_model, eps=1e-5)
-        self.attention = CausalSelfAttention(config)
+        self.attention = build_attention(config, layer_index)
         self.mlp_norm = nn.LayerNorm(config.d_model, eps=1e-5)
         self.mlp = nn.Sequential(
             nn.Linear(config.d_model, 4 * config.d_model),
@@ -72,7 +37,7 @@ class GPT(nn.Module):
         self.config = config
         self.token_embedding = nn.Embedding(config.vocab_size, config.d_model)
         self.position_embedding = nn.Embedding(config.context_length, config.d_model)
-        self.blocks = [Block(config) for _ in range(config.n_layers)]
+        self.blocks = [Block(config, i) for i in range(config.n_layers)]
         self.final_norm = nn.LayerNorm(config.d_model, eps=1e-5)
 
         def initialize(path, parameter):

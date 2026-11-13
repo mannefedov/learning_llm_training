@@ -437,3 +437,53 @@ Update this log before pushing work.
   and generated samples. No fresh large preparation or substantial training run
   was performed by the agent. Caches, checkpoints, and credentials stay ignored.
 - **Publishing:** User requested committing and pushing to `origin/main`.
+
+## 2026-11-13 — Modular full and sliding-window attention
+
+- **Changes:** Extracted backend-specific attention modules and a shared GPT
+  config. Each block uses a small explicit factory; supported per-layer types
+  are `full` and `sliding_window`. No plugin registry or backend framework.
+  Missing attention fields preserve full attention for old configs/checkpoints;
+  projection parameter paths, shapes, initialization, and counts are unchanged.
+- **Algorithm:** Window W includes self, so query i sees max(0,i-W+1)..i.
+  SWA computes query tiles of W positions against at most 2W-1 keys with a causal
+  band mask. This bounds score storage/computation by O(TW) rather than masking
+  a full T-by-T score matrix. Standard MHA and learned positions remain; no
+  KV cache or custom kernels. No measured speed/memory benefit claimed.
+- **Research:** https://arxiv.org/abs/2408.00118 (Gemma 2) and
+  https://arxiv.org/html/2503.19786v1#S5.SS2 (Gemma 3). Reported layouts are
+  1:1 local/global with window 4096 in Gemma 2, and 5:1 with window 1024 in
+  Gemma 3. Gemma 3's text-only ablations report little perplexity impact from
+  several ratios. These are reported large-model results, not local findings.
+- **Experiment choice:** Separate four-layer 1:1 and 3:1 sequential MLX configs,
+  local window 64 at context 256. Start with 1:1 as a simple four-layer mix;
+  compare 3:1 without changing depth. Window 64 is an experimental choice,
+  not an established optimum. Both configs reuse the existing token cache and
+  retain baseline data, model width/depth, and training budget. Active run and
+  baseline configs were not modified.
+- **Verification:** All 35 offline tests passed. SWA outputs and gradients match
+  an independent dense band-mask reference for windows 1, 3, T, and >T;
+  boundaries, causal exclusion, tile sizes, selection, config validation,
+  full-window equivalence, and old config defaults checked. PyTorch/MLX logits
+  and two optimizer updates agree for full, local, and mixed models. Tiny mixed
+  Metal update passed. Reran 13 MLX tests after adding SWA checkpoint reload and
+  generation coverage; all passed. Config budget equivalence, notebook syntax,
+  rendered mask plots, README links, and diff whitespace checked.
+- **Left for user / next step:** Run `python -m llm_training.pretraining_mlx
+  --config configs/pretraining/sequential_gpt_mlx_swa_1to1.toml`, then compare
+  the 3:1 config and baseline in notebook 03. Notebook 04 contains source links
+  and mask exploration. No substantial training, sweeps, or speed benchmark run.
+  Open question: which window and layer mix best preserve quality here?
+
+## 2026-11-13 — Publish attention variants
+
+- **Changes being pushed:** Modular full/SWA attention in both backends, shared
+  GPT config, 1:1 and 3:1 experiment configs, mask notebook, short model README,
+  and attention tests. Existing defaults and baseline configs remain intact.
+- **Verification:** Full offline suite passed 35 tests; subsequent 13-test MLX
+  run passed with SWA checkpoint reload/generation coverage. Notebook rendering,
+  matched experiment settings, local links, and final diff whitespace checked.
+- **Left for user / next step:** Continue active training and compare full, 1:1,
+  and 3:1 loss curves and samples. No substantial training or performance
+  benchmark performed by the agent. Training process and local artifacts untouched.
+- **Publishing:** User requested committing and pushing to `origin/main`.

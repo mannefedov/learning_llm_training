@@ -4,64 +4,21 @@ Architecture reference: https://github.com/karpathy/build-nanogpt
 This is an educational model, not a GPT-2 checkpoint-compatible implementation.
 """
 
-from dataclasses import dataclass
 import math
 
 import torch
 from torch import nn
 from torch.nn import functional as F
 
-
-@dataclass
-class GPTConfig:
-    vocab_size: int
-    context_length: int = 128
-    n_layers: int = 4
-    n_heads: int = 4
-    d_model: int = 128
-
-    def __post_init__(self):
-        if min(self.vocab_size, self.context_length, self.n_layers,
-               self.n_heads, self.d_model) < 1:
-            raise ValueError("All model dimensions must be positive")
-        if self.d_model % self.n_heads:
-            raise ValueError("d_model must be divisible by n_heads")
-
-
-class CausalSelfAttention(nn.Module):
-    def __init__(self, config: GPTConfig):
-        super().__init__()
-        self.n_heads = config.n_heads
-        self.qkv = nn.Linear(config.d_model, 3 * config.d_model)
-        self.proj = nn.Linear(config.d_model, config.d_model)
-        self.register_buffer(
-            "causal_mask",
-            torch.ones(config.context_length, config.context_length, dtype=torch.bool).tril(),
-            persistent=False,
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch, length, width = x.shape
-        head_size = width // self.n_heads
-        q, k, v = self.qkv(x).chunk(3, dim=-1)
-        # Each head attends independently: (batch, heads, time, head_size).
-        q = q.view(batch, length, self.n_heads, head_size).transpose(1, 2)
-        k = k.view(batch, length, self.n_heads, head_size).transpose(1, 2)
-        v = v.view(batch, length, self.n_heads, head_size).transpose(1, 2)
-
-        scores = (q @ k.transpose(-2, -1)) / math.sqrt(head_size)
-        scores = scores.masked_fill(~self.causal_mask[:length, :length], float("-inf"))
-        weights = F.softmax(scores, dim=-1)
-        attended = weights @ v
-        attended = attended.transpose(1, 2).contiguous().view(batch, length, width)
-        return self.proj(attended)
+from .config import GPTConfig
+from .attention import CausalSelfAttention, build_attention
 
 
 class Block(nn.Module):
-    def __init__(self, config: GPTConfig):
+    def __init__(self, config: GPTConfig, layer_index: int = 0):
         super().__init__()
         self.attention_norm = nn.LayerNorm(config.d_model)
-        self.attention = CausalSelfAttention(config)
+        self.attention = build_attention(config, layer_index)
         self.mlp_norm = nn.LayerNorm(config.d_model)
         self.mlp = nn.Sequential(
             nn.Linear(config.d_model, 4 * config.d_model),
@@ -80,7 +37,7 @@ class GPT(nn.Module):
         self.config = config
         self.token_embedding = nn.Embedding(config.vocab_size, config.d_model)
         self.position_embedding = nn.Embedding(config.context_length, config.d_model)
-        self.blocks = nn.ModuleList([Block(config) for _ in range(config.n_layers)])
+        self.blocks = nn.ModuleList([Block(config, i) for i in range(config.n_layers)])
         self.final_norm = nn.LayerNorm(config.d_model)
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
         self.apply(self._init_weights)

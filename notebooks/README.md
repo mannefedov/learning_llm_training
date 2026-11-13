@@ -9,6 +9,7 @@ the loss notebook also detects when the kernel starts inside `notebooks/`.
 | [01 — BPE](01_bpe_fineweb2.ipynb) | Train and inspect a tokenizer |
 | [02 — Generation](02_mlx_generation.ipynb) | Sample a saved MLX model |
 | [03 — Loss curves](03_compare_run_losses.ipynb) | Compare runs; rerun the final cell to refresh |
+| [04 — Attention](04_attention_variants.ipynb) | Compare full and sliding-window masks |
 
 Install the extras needed by your notebook:
 

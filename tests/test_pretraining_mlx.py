@@ -182,6 +182,7 @@ class PretrainingTests(unittest.TestCase):
                 'val_split="test"\ntrain_documents=20000000\nval_documents=1\nshuffle_buffer_size=0\n'
                 f'[tokenizer]\npath="{root}/tokenizer.json"\neos_token="<|endoftext|>"\n'
                 '[model]\ncontext_length=4\nn_layers=1\nn_heads=1\nd_model=8\n'
+                'attention_types=["sliding_window"]\nsliding_window=2\n'
                 '[training]\nsteps=2\nbatch_size=2\nsampling="sequential"\neval_batches=1\ndevice="cpu"\n'
                 '[generation]\nenabled=false\n'
                 f'[cache]\ndirectory="{root}/cache"\n[output]\ndirectory="{root}/run"\n')
@@ -189,6 +190,12 @@ class PretrainingTests(unittest.TestCase):
             with redirect_stdout(io.StringIO()):
                 checkpoint = train_from_config(config)
             self.assertEqual(json.loads(checkpoint.read_text())["step"], 2)
+            from llm_training.pretraining_mlx.generate import load_checkpoint, generate_text
+            restored, saved_tokenizer, eos_id = load_checkpoint(checkpoint.parent, device="cpu")
+            self.assertEqual(restored.config.attention_types, ["sliding_window"])
+            self.assertEqual(restored.config.sliding_window, 2)
+            self.assertTrue(generate_text(restored, saved_tokenizer, "hello", max_new_tokens=3,
+                                          eos_id=eos_id).startswith("hello"))
             metadata = json.loads((checkpoint.parent / "metadata.json").read_text())
             self.assertEqual(metadata["token_cache"]["train"]["tokens"], 17)
             self.assertEqual(metadata["training_config"]["sampling"], "sequential")
@@ -270,12 +277,20 @@ class PretrainingTests(unittest.TestCase):
 
     @unittest.skipUnless(importlib.util.find_spec("torch"), "PyTorch is optional")
     def test_matches_pytorch_forward_and_optimizer_update(self):
+        for attention_types in (None, ["sliding_window"], ["sliding_window", "full"]):
+            with self.subTest(attention_types=attention_types):
+                self.check_pytorch_forward_and_optimizer_update(attention_types)
+
+    def check_pytorch_forward_and_optimizer_update(self, attention_types):
         import numpy as np
         import torch
         from llm_training.models.gpt import GPT as TorchGPT, GPTConfig as TorchConfig
         from llm_training.pretraining_mlx.train import MatrixAdamW
         torch.set_num_threads(1)
-        dimensions = dict(vocab_size=8, context_length=4, n_layers=1, n_heads=2, d_model=8)
+        dimensions = dict(vocab_size=8, context_length=7,
+                          n_layers=len(attention_types) if attention_types else 1,
+                          n_heads=2, d_model=8, attention_types=attention_types,
+                          sliding_window=2 if attention_types else None)
         reference = TorchGPT(TorchConfig(**dimensions))
         model = GPT(GPTConfig(**dimensions))
         weights = dict(reference.named_parameters())
@@ -286,8 +301,8 @@ class PretrainingTests(unittest.TestCase):
         model.load_weights([(name, mx.array(weights[name.replace("mlp.layers.", "mlp.")]
                                            .detach().numpy()))
                             for name, _ in tree_flatten(model.parameters())])
-        ids = [[0, 1, 2, 3], [3, 2, 1, 0]]
-        targets = [[1, 2, 3, 4], [2, 1, 0, 7]]
+        ids = [[0, 1, 2, 3, 4, 5, 6], [6, 5, 4, 3, 2, 1, 0]]
+        targets = [[1, 2, 3, 4, 5, 6, 7], [5, 4, 3, 2, 1, 0, 7]]
         logits, loss = model(mx.array(ids), mx.array(targets))
         reference_logits, reference_loss = reference(torch.tensor(ids), torch.tensor(targets))
         np.testing.assert_allclose(np.array(logits), reference_logits.detach().numpy(), atol=2e-6)
@@ -318,7 +333,8 @@ class PretrainingTests(unittest.TestCase):
     def test_tiny_metal_training_step(self):
         mx.set_default_device(mx.gpu)
         try:
-            model = GPT(GPTConfig(vocab_size=4, context_length=4, n_layers=1, n_heads=1, d_model=8))
+            model = GPT(GPTConfig(vocab_size=4, context_length=4, n_layers=2, n_heads=1, d_model=8,
+                                  attention_types=["sliding_window", "full"], sliding_window=2))
             tokens = mx.array([0, 1, 2, 3] * 5)
             with redirect_stdout(io.StringIO()):
                 train(model, tokens, tokens, TrainConfig(steps=1, batch_size=1,
