@@ -10,6 +10,7 @@ import torch
 
 from llm_training.models.gpt import GPT
 from .data import get_batch
+from llm_training.pretraining.progress import TrainingProgress
 
 
 @dataclass
@@ -80,22 +81,24 @@ def train(
     )
     generator = torch.Generator().manual_seed(config.seed)
     print(f"Device: {device}; parameters: {sum(p.numel() for p in parameters):,}")
-    val_loss = evaluate(model, val_tokens, config)
-    print(f"step=0 val_loss={val_loss:.4f}")
-    if record_metrics is not None:
-        record_metrics(0, None, val_loss)
-    for step in range(1, config.steps + 1):
-        x, y = get_batch(train_tokens, config.batch_size, model.config.context_length, device, generator)
-        optimizer.zero_grad(set_to_none=True)
-        _, loss = model(x, y)
-        if not torch.isfinite(loss):
-            raise RuntimeError(f"Non-finite loss at step {step}")
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
-        optimizer.step()
-        if step == 1 or step % config.eval_every == 0 or step == config.steps:
-            val_loss = evaluate(model, val_tokens, config)
-            print(f"step={step} train_loss={loss.item():.4f} val_loss={val_loss:.4f}")
-            if record_metrics is not None:
-                record_metrics(step, loss.item(), val_loss)
+    with TrainingProgress(config.steps) as progress:
+        val_loss = evaluate(model, val_tokens, config)
+        progress.update(0, val_loss=val_loss)
+        if record_metrics is not None:
+            record_metrics(0, None, val_loss)
+        for step in range(1, config.steps + 1):
+            x, y = get_batch(train_tokens, config.batch_size, model.config.context_length, device, generator)
+            optimizer.zero_grad(set_to_none=True)
+            _, loss = model(x, y)
+            if not torch.isfinite(loss):
+                raise RuntimeError(f"Non-finite loss at step {step}")
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
+            optimizer.step()
+            if step == 1 or step % config.eval_every == 0 or step == config.steps:
+                val_loss = evaluate(model, val_tokens, config)
+                progress.update(step, train_loss=loss.item(), val_loss=val_loss)
+                if record_metrics is not None:
+                    record_metrics(step, loss.item(), val_loss)
+            progress.update(step)
     return optimizer

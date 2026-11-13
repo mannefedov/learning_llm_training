@@ -255,3 +255,117 @@ Update this log before pushing work.
 - **Next step / left for user:** Inspect loss curves and checkpoint samples
   before increasing training budget or changing architecture. Existing runs
   have different settings, so final losses alone do not isolate a cause.
+
+## 2026-11-13 — Checkpoint generation exploration
+
+- **Changes:** Added `python -m llm_training.pretraining_mlx.generate` with run
+  selection, repeatable prompts/seeds, multiple temperatures, token limit,
+  device selection, and EOS stopping. Loads saved model/tokenizer together;
+  no optimizer or dataset loading. Added reusable checkpoint/text generation
+  functions and `notebooks/02_mlx_generation.ipynb` for manual exploration.
+  README includes the command and links the notebook.
+- **Verification:** Ten tiny offline MLX tests passed, including saved checkpoint
+  loading, seed repeatability, EOS stopping, and invalid sampling arguments.
+  CLI help, notebook code-cell compilation, and diff whitespace passed.
+- **Left for the user:** Run the command or notebook against the existing trained
+  run and inspect continuation quality across prompts, temperatures, and seeds.
+  No real-checkpoint quality exploration, new training, or remote fetch performed.
+- **Next step:** Compare repetition, sentence structure, and prompt consistency;
+  use observations together with validation losses to choose the next change.
+
+## 2026-11-13 — Periodic generation during MLX training
+
+- **Changes:** Added optional `[generation]` settings, enabled by default. MLX
+  config runs append readable continuations to `samples.txt` at step zero,
+  every configured interval (default 500), and the final step. Default prompt
+  is `Сегодня утром я`; example config supplies two Russian prompts. Each entry
+  records step, prompt, temperature, seed, and token limit and is flushed.
+  Disabled generation creates no sample file. Metadata records resolved defaults.
+- **Implementation:** Reused standalone generation with local MLX PRNG keys;
+  model generation accepts an optional explicit key. The callback restores model
+  training mode even on error and does not change training or global RNG state.
+- **Verification:** All 23 offline tests passed, including sample cadence,
+  enabled/disabled config runs yielding identical model outputs, EOS stopping,
+  RNG isolation, mode restoration on failure, and flushed sample retention.
+  Syntax and whitespace checks passed. No substantial training or remote fetch.
+- **Left for the user / next step:** Run the normal MLX training command and
+  inspect or follow `<run-directory>/samples.txt`. Adjust `generation.every`,
+  prompts, temperature, seed, and token limit; set `enabled = false` to skip it.
+  Existing checkpoints and historical runs are unchanged.
+
+## 2026-11-13 — Compact training progress
+
+- **Changes:** Added a dependency-free progress display shared by PyTorch and
+  MLX loops, replacing repeated evaluation print lines. Shows percentage,
+  completed/total steps, elapsed time, remaining-time estimate, and latest
+  logged losses. Refreshes a single terminal line at most once per second;
+  redirected logs get initial/final status and at most one line per 30 seconds.
+  Narrow terminals omit the visual bar and truncate to avoid wrapping.
+- **Timing:** ETA uses average wall time per completed update, including
+  validation and sampling. Data preparation and checkpoint writing are excluded.
+  Early estimates may be noisy. Interruptions/errors print stopped status at
+  actual recorded progress rather than claiming completion.
+- **Verification:** All 26 offline tests passed, covering deterministic elapsed
+  time/ETA/percentage, sparse redirected output, interruption cleanup, and
+  existing training/sampling/checkpoint checks. Diff whitespace passed.
+- **Left for the user / next step:** Run the usual training command to inspect
+  the live display on a longer run. No substantial training, remote fetching,
+  or new dependencies. CSV metrics and sample-file cadence remain unchanged.
+
+## 2026-11-13 — Compare loss curves across runs
+
+- **Changes:** Added `notebooks/03_compare_run_losses.ipynb` with run selection,
+  separate training/validation curves, optional rolling training-loss smoothing,
+  initial-step filtering, latest/best validation summaries, and settings/tokenizer
+  hashes for comparison context. Rerunning the final cell reloads running CSVs;
+  incomplete final lines are excluded. Added optional `analysis` Matplotlib
+  dependency and README entry. No training code or run artifacts changed.
+- **Verification:** Parsed every code cell; checked partial CSV rows, empty
+  files, metadata rewrite fallback, and smoothing on tiny local fixtures.
+  Executed the notebook cells against six existing runs, including the active
+  run, with isolated Matplotlib dependencies under `/private/tmp`. Rendered and
+  visually inspected both loss plots; checked smoothed/zoomed refresh. Notebook
+  remains unexecuted on disk, without saved outputs. Diff whitespace passed.
+- **Left for the user / next step:** Install `.[analysis]` in the notebook kernel
+  environment, select runs, and rerun the final cell for updated curves.
+  Runs 05/06 have a different tokenizer hash from earlier runs, so compare settings
+  before attributing loss differences to training budget. No new model training,
+  remote data access, or changes to the active training environment.
+
+## 2026-11-13 — Notebook prose preference
+
+- **Preference:** Keep notebook prose minimal and focused on running and
+  understanding code; avoid unsolicited caveats and generic comparison advice.
+  Saved in `AGENTS.md` for future sessions.
+- **Changes:** Removed the interpretation/caveat cell from the loss comparison
+  notebook. No code changes. Notebook JSON parsed and diff whitespace checked.
+
+## 2026-11-13 — Short, runnable human-facing instructions
+
+- **Preference:** Human-facing READMEs/instructions should be short, readable,
+  and command-oriented; detailed agent guidance and continuity records belong
+  in `AGENTS.md` and `PROGRESS.md`. Saved this distinction in `AGENTS.md`.
+- **Changes:** Replaced the long root README with a five-step Mac workflow and
+  stage links. Added module READMEs for tokenization, MLX pretraining, PyTorch
+  pretraining, models, and post-training status. Simplified notebook instructions
+  and replaced stale docs indexes with links to runnable module instructions.
+- **Verification:** Checked all 11 READMEs, 29 local links, shell/Python snippet
+  syntax, and diff whitespace. Documentation-only changes; no training run.
+- **Next step:** User review before committing. Existing pending code, notebooks,
+  and user config edits remain intact; no commit or push performed this turn.
+
+## 2026-11-13 — Publish generation, progress, and notebooks
+
+- **Changes being pushed:** Standalone and periodic MLX generation, sample files,
+  compact progress for both training backends, generation/loss notebooks,
+  plotting extra, concise workflow/module READMEs, and writing preferences.
+  Preserved user's current configs: 10,000-document tokenizer/training samples,
+  the second tokenizer artifact path, 200,000 steps, batch size 10, and selected
+  generation prompts. Artifact paths refer to local files, not committed assets.
+- **Verification:** Latest offline suite passed all 26 tests. Loss notebook
+  rendered against existing runs with isolated plotting dependencies; partial
+  row and refresh checks passed. README links/snippet syntax and final diff
+  whitespace checked. No new substantial training or model evaluation.
+- **Left for user / next steps:** Continue the active run, inspect samples, and
+  refresh loss plots. Existing training artifacts and `.env` remain untracked.
+- **Publishing:** User requested committing and pushing to `origin/main`.

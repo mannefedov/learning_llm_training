@@ -100,12 +100,15 @@ class GPT(nn.Module):
             loss = nn.losses.cross_entropy(logits, targets, reduction="mean")
         return logits, loss
 
-    def generate(self, input_ids, max_new_tokens: int, temperature: float = 1.0):
+    def generate(self, input_ids, max_new_tokens: int, temperature: float = 1.0, *, key=None):
         if temperature <= 0 or max_new_tokens < 0:
             raise ValueError("temperature must be positive and max_new_tokens nonnegative")
         for _ in range(max_new_tokens):
             logits, _ = self(input_ids[:, -self.config.context_length:])
-            next_id = mx.random.categorical(logits[:, -1] / temperature)[:, None]
+            sample_key = None
+            if key is not None:
+                key, sample_key = mx.random.split(key)
+            next_id = mx.random.categorical(logits[:, -1] / temperature, key=sample_key)[:, None]
             input_ids = mx.concatenate((input_ids, next_id), axis=1)
             mx.eval(input_ids)  # Bound the lazy graph during long continuations.
         return input_ids

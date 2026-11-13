@@ -93,6 +93,7 @@ class PretrainingTests(unittest.TestCase):
                 f'[tokenizer]\npath="{root.as_posix()}/tokenizer.json"\neos_token="<|endoftext|>"\n'
                 '[model]\ncontext_length=8\nn_layers=1\nn_heads=2\nd_model=16\n'
                 '[training]\nsteps=2\nbatch_size=2\neval_every=2\neval_batches=1\ndevice="cpu"\n'
+                '[generation]\nenabled=true\nevery=1\nprompts=["hello"]\nmax_new_tokens=3\n'
                 f'[output]\ndirectory="{root.as_posix()}/run"\n'
             )
             with redirect_stdout(io.StringIO()):
@@ -100,6 +101,15 @@ class PretrainingTests(unittest.TestCase):
             checkpoint = json.loads(checkpoint_path.read_text())
             model = GPT(GPTConfig(**checkpoint["model_config"]))
             model.load_weights(str(checkpoint_path.parent / checkpoint["model"]))
+            from llm_training.pretraining_mlx.generate import load_checkpoint, generate_text
+            loaded, saved_tokenizer, eos_id = load_checkpoint(checkpoint_path.parent, device="cpu")
+            probe = mx.array([[1, 2, 3]])
+            self.assertTrue(mx.array_equal(model(probe)[0], loaded(probe)[0]).item())
+            sample = generate_text(loaded, saved_tokenizer, "hello", max_new_tokens=3,
+                                   temperature=0.8, seed=7, eos_id=eos_id)
+            self.assertEqual(sample, generate_text(loaded, saved_tokenizer, "hello",
+                             max_new_tokens=3, temperature=0.8, seed=7, eos_id=eos_id))
+            self.assertTrue(sample.startswith("hello"))
             state = tree_unflatten(mx.load(str(checkpoint_path.parent / checkpoint["optimizer"])))
             self.assertEqual(state["step"].item(), 2)
             self.assertEqual(checkpoint["step"], 2)
@@ -120,11 +130,68 @@ class PretrainingTests(unittest.TestCase):
             self.assertTrue(all(float(row["val_loss"]) > 0 for row in rows))
             generated = model.generate(mx.array([[1] * 8]), max_new_tokens=3)
             self.assertEqual(generated.shape, (1, 11))
+            samples = (checkpoint_path.parent / "samples.txt").read_text()
+            self.assertEqual(samples.count("=== step="), 3)
+            for step in (0, 1, 2):
+                self.assertIn(f"=== step={step} ", samples)
+            self.assertTrue(metadata["generation_config"]["enabled"])
+            config.write_text(config.read_text().replace("enabled=true", "enabled=false"))
             with redirect_stdout(io.StringIO()):
                 second_checkpoint = train_from_config(config)
+            self.assertFalse((second_checkpoint.parent / "samples.txt").exists())
+            disabled, _, _ = load_checkpoint(second_checkpoint.parent, device="cpu")
+            self.assertTrue(mx.array_equal(loaded(probe)[0], disabled(probe)[0]).item())
             self.assertEqual(second_checkpoint.parent.name, "run-02")
             self.assertTrue(checkpoint_path.is_file())
             self.assertTrue(second_checkpoint.is_file())
+
+    def test_generation_eos_and_invalid_inputs(self):
+        from unittest.mock import Mock
+        from llm_training.pretraining_mlx.generate import generate_text
+        tokenizer = train_byte_level_bpe(["hello"], vocab_size=300, show_progress=False)
+        eos = tokenizer.token_to_id("<|endoftext|>")
+        model = Mock()
+        model.generate.side_effect = lambda tokens, **kwargs: mx.concatenate(
+            (tokens, mx.array([[eos]], dtype=mx.int32)), axis=1)
+        text = generate_text(model, tokenizer, "hello", max_new_tokens=10, eos_id=eos)
+        self.assertEqual(text, "hello<|endoftext|>")
+        model.generate.assert_called_once()
+        for kwargs in ({"prompt": ""}, {"temperature": 0}, {"temperature": float("nan")},
+                       {"max_new_tokens": -1}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                generate_text(model, tokenizer, **({"prompt": "hello"} | kwargs))
+
+    def test_periodic_samples_cadence_rng_mode_and_failure_flush(self):
+        from llm_training.pretraining_mlx.sampling import GenerationConfig, log_samples
+        model = GPT(GPTConfig(vocab_size=300, context_length=4, n_layers=1, n_heads=1, d_model=8))
+        mx.eval(model.parameters())
+        tokenizer = train_byte_level_bpe(["hello"], vocab_size=300, show_progress=False)
+        eos = tokenizer.token_to_id("<|endoftext|>")
+        config = GenerationConfig(every=3, prompts=["hello"], max_new_tokens=2)
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mx.random.seed(7)
+            expected = mx.random.uniform(shape=(4,))
+            mx.eval(expected)
+            mx.random.seed(7)
+            with log_samples(root, model, tokenizer, eos, config, 5) as record:
+                for step in range(6):
+                    record(step)
+                self.assertTrue(model.training)
+                self.assertTrue(mx.array_equal(mx.random.uniform(shape=(4,)), expected).item())
+                text = (root / "samples.txt").read_text()
+                self.assertEqual(text.count("=== step="), 3)
+                for step in (0, 3, 5):
+                    self.assertIn(f"=== step={step} ", text)
+                with patch("llm_training.pretraining_mlx.sampling.generate_text",
+                           side_effect=RuntimeError("sampling failed")):
+                    with self.assertRaises(RuntimeError):
+                        record(3)
+                self.assertTrue(model.training)
+                self.assertEqual((root / "samples.txt").read_text(), text)
+        for kwargs in ({"every": 0}, {"prompts": []}, {"temperature": float("nan")}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                GenerationConfig(**kwargs)
 
     def test_evaluation_keeps_training_rng_and_mode(self):
         from llm_training.pretraining_mlx.train import evaluate

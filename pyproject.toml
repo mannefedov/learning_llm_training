@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
+analysis = ["matplotlib>=3.8"]
 pretraining-mlx = [
     "mlx>=0.31,<0.33",
     "tokenizers==0.22.2",

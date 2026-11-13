@@ -3,14 +3,14 @@ dataset_id = "HuggingFaceFW/fineweb-2"
 subset = "rus_Cyrl"
 train_split = "train"
 val_split = "test"
-train_documents = 1000
+train_documents = 10000
 val_documents = 100
 seed = 42
 shuffle_buffer_size = 100
 # revision = "<dataset commit SHA>"
 
 [tokenizer]
-path = "artifacts/tokenization/fineweb2-rus-bpe-8k/tokenizer.json"
+path = "artifacts/tokenization/fineweb2-rus-bpe-8k-02/tokenizer.json"
 eos_token = "<|endoftext|>"
 
 [model]
@@ -21,8 +21,8 @@ n_heads = 4
 d_model = 128
 
 [training]
-steps = 5000
-batch_size = 8
+steps = 200000
+batch_size = 10
 learning_rate = 0.0003
 weight_decay = 0.1
 grad_clip = 1.0
@@ -30,6 +30,14 @@ eval_every = 50
 eval_batches = 10
 seed = 42
 device = "auto"  # Metal GPU, then CPU; or specify "cpu" / "gpu".
+
+[generation]
+enabled = true
+every = 500
+prompts = ["я", "в", "что", "Москва - "]
+max_new_tokens = 100
+temperature = 0.8
+seed = 42
 
 [output]
 directory = "artifacts/pretraining/tiny-gpt-mlx-run-01"

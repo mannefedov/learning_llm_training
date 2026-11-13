@@ -14,6 +14,7 @@ from mlx.utils import tree_flatten
 
 from llm_training.models.gpt_mlx import GPT
 from .data import get_batch
+from llm_training.pretraining.progress import TrainingProgress
 
 
 @dataclass
@@ -69,7 +70,8 @@ def evaluate(model: GPT, tokens, config: TrainConfig) -> float:
 
 
 def train(model: GPT, train_tokens, val_tokens, config: TrainConfig,
-          record_metrics: Callable[[int, float | None, float], None] | None = None):
+          record_metrics: Callable[[int, float | None, float], None] | None = None,
+          record_samples: Callable[[int], None] | None = None):
     mx.set_default_device(choose_device(config.device))
     model.train()
     optimizer = MatrixAdamW(learning_rate=config.learning_rate, betas=[0.9, 0.95],
@@ -78,22 +80,28 @@ def train(model: GPT, train_tokens, val_tokens, config: TrainConfig,
     generator = random.Random(config.seed)
     count = sum(p.size for _, p in tree_flatten(model.parameters()))
     print(f"Device: {mx.default_device()}; parameters: {count:,}")
-    val_loss = evaluate(model, val_tokens, config)
-    print(f"step=0 val_loss={val_loss:.4f}")
-    if record_metrics is not None:
-        record_metrics(0, None, val_loss)
-    for step in range(1, config.steps + 1):
-        x, y = get_batch(train_tokens, config.batch_size, model.config.context_length, generator)
-        loss, gradients = loss_and_grad(model, x, y)
-        if not mx.isfinite(loss).item():
-            raise RuntimeError(f"Non-finite loss at step {step}")
-        gradients, _ = optim.clip_grad_norm(gradients, config.grad_clip)
-        optimizer.update(model, gradients)
-        # MLX is lazy: materialize updates each step to bound the graph and memory.
-        mx.eval(model.parameters(), optimizer.state)
-        if step == 1 or step % config.eval_every == 0 or step == config.steps:
-            val_loss = evaluate(model, val_tokens, config)
-            print(f"step={step} train_loss={loss.item():.4f} val_loss={val_loss:.4f}")
-            if record_metrics is not None:
-                record_metrics(step, loss.item(), val_loss)
+    with TrainingProgress(config.steps) as progress:
+        val_loss = evaluate(model, val_tokens, config)
+        progress.update(0, val_loss=val_loss)
+        if record_metrics is not None:
+            record_metrics(0, None, val_loss)
+        if record_samples is not None:
+            record_samples(0)
+        for step in range(1, config.steps + 1):
+            x, y = get_batch(train_tokens, config.batch_size, model.config.context_length, generator)
+            loss, gradients = loss_and_grad(model, x, y)
+            if not mx.isfinite(loss).item():
+                raise RuntimeError(f"Non-finite loss at step {step}")
+            gradients, _ = optim.clip_grad_norm(gradients, config.grad_clip)
+            optimizer.update(model, gradients)
+            # MLX is lazy: materialize updates each step to bound the graph and memory.
+            mx.eval(model.parameters(), optimizer.state)
+            if step == 1 or step % config.eval_every == 0 or step == config.steps:
+                val_loss = evaluate(model, val_tokens, config)
+                progress.update(step, train_loss=loss.item(), val_loss=val_loss)
+                if record_metrics is not None:
+                    record_metrics(step, loss.item(), val_loss)
+            if record_samples is not None:
+                record_samples(step)
+            progress.update(step)
     return optimizer

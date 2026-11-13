@@ -1,11 +1,20 @@
 # Notebooks
 
-Use this directory for freeform explorations, worked examples, and small
-experiments. Use descriptive names such as `01_tokenization_basics.ipynb`.
+Open a notebook in your editor, select the project's Python environment as its
+kernel, and run the cells in order. Commands and paths assume the repository root;
+the loss notebook also detects when the kernel starts inside `notebooks/`.
 
-Start each notebook with the learning question and links to relevant notes in
-`../docs/`. Import reusable implementations from `llm_training` after installing
-the package into the notebook kernel's environment.
+| Notebook | Use |
+| --- | --- |
+| [01 — BPE](01_bpe_fineweb2.ipynb) | Train and inspect a tokenizer |
+| [02 — Generation](02_mlx_generation.ipynb) | Sample a saved MLX model |
+| [03 — Loss curves](03_compare_run_losses.ipynb) | Compare runs; rerun the final cell to refresh |
 
-Keep committed outputs small; clear large outputs before committing. Move
-reusable code into `src/llm_training/` when its purpose is clear.
+Install the extras needed by your notebook:
+
+```sh
+python -m pip install -e '.[pretraining-mlx,analysis]'
+```
+
+For notebook 02, set `run_dir` to a completed run. For notebook 03,
+set `selected_names` to the run folders you want, or leave it empty for all runs.

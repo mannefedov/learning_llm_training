@@ -26,16 +26,26 @@ def train_from_config(config_path: Path) -> Path:
     from .data import encode_documents
     from .train import TrainConfig, choose_device, train
     from .tracking import environment_metadata, log_run
+    from .sampling import GenerationConfig, log_samples
 
     config_text = config_path.read_text(encoding="utf-8")
     config = tomllib.loads(config_text)
-    if set(config) != {"data", "tokenizer", "model", "training", "output"}:
-        raise ValueError("Config must contain data, tokenizer, model, training, and output tables")
+    required = {"data", "tokenizer", "model", "training", "output"}
+    if not required <= set(config) or set(config) - required - {"generation"}:
+        raise ValueError("Config requires data, tokenizer, model, training, output; generation is optional")
     output_dir = Path(config["output"]["directory"])
     tokenizer = Tokenizer.from_file(config["tokenizer"]["path"])
     model_config = GPTConfig(vocab_size=tokenizer.get_vocab_size(), **config["model"])
     train_config = TrainConfig(**config["training"])
+    generation_config = GenerationConfig(**config.get("generation", {}))
     eos_token = config["tokenizer"]["eos_token"]
+    eos_id = tokenizer.token_to_id(eos_token)
+    if eos_id is None:
+        raise ValueError(f"Tokenizer has no EOS token {eos_token!r}")
+    if generation_config.enabled:
+        for prompt in generation_config.prompts:
+            if not tokenizer.encode(prompt, add_special_tokens=False).ids:
+                raise ValueError("Generation prompts must encode to at least one token")
     # Train and validation use separate document splits, before token packing.
     data_config = dict(config["data"])
     train_documents = data_config.pop("train_documents")
@@ -58,6 +68,7 @@ def train_from_config(config_path: Path) -> Path:
         "run_name": output_dir.name,
         "model_config": asdict(model_config),
         "training_config": asdict(train_config),
+        "generation_config": asdict(generation_config),
         "data_config": config["data"],
         "device": "gpu" if choose_device(train_config.device) == mx.gpu else "cpu",
         "parameter_count": sum(p.size for _, p in tree_flatten(model.parameters())),
@@ -76,7 +87,10 @@ def train_from_config(config_path: Path) -> Path:
             if tokens.size <= model_config.context_length:
                 raise ValueError(f"{name} data needs at least context_length + 1 tokens")
         print(f"Tokens: train={train_tokens.size:,}; validation={val_tokens.size:,}")
-        optimizer = train(model, train_tokens, val_tokens, train_config, record_metrics)
+        with log_samples(output_dir, model, tokenizer, eos_id,
+                         generation_config, train_config.steps) as record_samples:
+            optimizer = train(model, train_tokens, val_tokens, train_config,
+                              record_metrics, record_samples)
         model.save_weights(str(output_dir / "model.safetensors"))
         mx.save_safetensors(str(output_dir / "optimizer.safetensors"),
                             dict(tree_flatten(optimizer.state)))

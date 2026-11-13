@@ -16,6 +16,21 @@ related topics. The goal is understanding and interview preparation.
 - Add dependencies only when needed for the current learning task.
 - Do not implement future training components merely to fill out the scaffold.
 
+## Human-facing and agent-facing writing
+
+- READMEs and user instructions are for the human reader: keep them short,
+  readable, and easy to act on. Lead with prerequisites, exact commands, and
+  where outputs go. Make the full workflow and each individual stage obvious.
+- Keep the root README as a quick start; put stage-specific commands and options
+  in the corresponding module README and link them. Avoid duplicate walkthroughs,
+  implementation inventories, generic caveats, and historical detail.
+- Agent-facing guidance (`AGENTS.md`) and session records (`PROGRESS.md`) may be
+  dense and detailed when needed for continuity. Do not copy that detail into
+  human-facing instructions. Put essential implementation explanations near code.
+- When changing behavior, update the relevant short instructions; prefer links
+  over expanding the root README. Do not hardcode changing experiment settings
+  into prose when the config is the source of truth.
+
 ## Organization and references
 
 - Reusable Python code belongs in `src/llm_training/`, grouped by training stage.
@@ -25,6 +40,9 @@ related topics. The goal is understanding and interview preparation.
 - Do not create speculative notes just because a topic was discussed or researched.
 - Put requested examples and exercises in notebooks, with supporting references
   in their Markdown cells until documentation is explicitly requested.
+- Keep notebook prose minimal and focused on running and understanding the code.
+  Avoid unsolicited caveats, generic interpretation advice, and unnecessary
+  explanations about comparisons or experimental limitations unless requested.
 - When docs are requested, organize them to match the code and use
   `docs/note_template.md` as a starting point. Link modules to existing relevant
   notes in docstrings; do not create documentation just to supply a link.
