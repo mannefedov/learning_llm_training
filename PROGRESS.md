@@ -241,3 +241,17 @@ Update this log before pushing work.
   mitigation remains unconfirmed against the original reported hang.
 - **Next steps:** Inspect real run losses and samples before backend unification.
 - **Publishing:** User requested a local commit; no push requested.
+
+## 2026-11-13 — Publish MLX implementation and inspect run records
+
+- **Publishing:** User requested pushing the committed MLX implementation,
+  automatic run directories, tokenizer cleanup, and tests to `origin/main`.
+- **Verification:** Prior full offline suite passed 21 tests; working tree was
+  clean before this log update. Artifacts and credentials remain ignored.
+- **Local observations:** Latest completed run `tiny-gpt-mlx-run-03` reached
+  5,000 steps. Recorded validation loss decreased from 9.0061 to 5.3375, with
+  its lowest recorded value at step 5,000. Training loss on that final batch
+  was 4.9940; this is not an interval mean. No new training or generation run.
+- **Next step / left for user:** Inspect loss curves and checkpoint samples
+  before increasing training budget or changing architecture. Existing runs
+  have different settings, so final losses alone do not isolate a cause.
