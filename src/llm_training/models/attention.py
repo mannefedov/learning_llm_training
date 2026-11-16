@@ -13,11 +13,13 @@ from torch import nn
 from torch.nn import functional as F
 
 from .config import GPTConfig
+from .numerics import stable_softmax
 
 
-def masked_attention(q, k, v, allowed):
+def masked_attention(q, k, v, allowed, *, stable=False):
     scores = (q @ k.transpose(-2, -1)) / math.sqrt(q.shape[-1])
-    weights = F.softmax(scores.masked_fill(~allowed, float("-inf")), dim=-1)
+    scores = scores.masked_fill(~allowed, float("-inf"))
+    weights = stable_softmax(scores) if stable else F.softmax(scores, dim=-1)
     return weights @ v
 
 
@@ -25,12 +27,14 @@ class CausalSelfAttention(nn.Module):
     def __init__(self, config: GPTConfig):
         super().__init__()
         self.n_heads = config.n_heads
+        self.stable_softmax = config.stable_softmax
         self.qkv = nn.Linear(config.d_model, 3 * config.d_model)
         self.proj = nn.Linear(config.d_model, config.d_model)
 
     def attend(self, q, k, v):
         positions = torch.arange(q.shape[2], device=q.device)
-        return masked_attention(q, k, v, positions[:, None] >= positions[None, :])
+        return masked_attention(q, k, v, positions[:, None] >= positions[None, :],
+                                stable=self.stable_softmax)
 
     def forward(self, x):
         batch, length, width = x.shape
@@ -61,7 +65,7 @@ class SlidingWindowAttention(CausalSelfAttention):
             distance = query_positions[:, None] - key_positions[None, :]
             allowed = (distance >= 0) & (distance < self.window_size)
             tiles.append(masked_attention(q[:, :, start:end], k[:, :, key_start:end],
-                                          v[:, :, key_start:end], allowed))
+                                          v[:, :, key_start:end], allowed, stable=self.stable_softmax))
         return torch.cat(tiles, dim=2)
 
 

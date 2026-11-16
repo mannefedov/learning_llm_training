@@ -11,6 +11,7 @@ import mlx.nn as nn
 from mlx.utils import tree_map_with_path
 
 from .config import GPTConfig
+from .numerics_mlx import stable_cross_entropy
 from .attention_mlx import CausalSelfAttention, build_attention
 
 
@@ -62,7 +63,8 @@ class GPT(nn.Module):
         if targets is not None:
             if targets.shape != input_ids.shape:
                 raise ValueError("targets must have the same shape as input_ids")
-            loss = nn.losses.cross_entropy(logits, targets, reduction="mean")
+            loss = (stable_cross_entropy(logits, targets) if self.config.stable_softmax
+                    else nn.losses.cross_entropy(logits, targets, reduction="mean"))
         return logits, loss
 
     def generate(self, input_ids, max_new_tokens: int, temperature: float = 1.0, *, key=None):

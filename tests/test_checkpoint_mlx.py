@@ -40,9 +40,9 @@ class CheckpointTests(unittest.TestCase):
             'train_documents=1\nval_documents=1\nshuffle_buffer_size=0\n'
             f'[tokenizer]\npath="{root}/tokenizer.json"\neos_token="<|endoftext|>"\n'
             '[model]\ncontext_length=4\nn_layers=2\nn_heads=1\nd_model=8\n'
-            'attention_types=["sliding_window", "full"]\nsliding_window=2\n'
+            'attention_types=["sliding_window", "full"]\nsliding_window=2\nstable_softmax=true\n'
             f'[training]\nsteps={steps}\nbatch_size=2\nsampling="{sampling}"\n'
-            'eval_every=2\neval_batches=1\ndevice="cpu"\n'
+            'eval_every=2\neval_batches=1\ndevice="cpu"\ncompile_step=true\n'
             f'[checkpoint]\nevery=2\nkeep={keep}\n[generation]\nenabled=false\n'
             f'[cache]\ndirectory="{root}/cache"\n[output]\ndirectory="{root}/run"\n')
         return config
@@ -82,6 +82,20 @@ class CheckpointTests(unittest.TestCase):
                 self.assertEqual(metadata["start_step"], 6)
                 with self.assertRaisesRegex(ValueError, "total greater"):
                     train_from_config(config, resume=resumed)
+                original_config = config.read_text()
+                config.write_text(original_config.replace("compile_step=true", "compile_step=false"))
+                toggled = train_from_config(config, resume=pointer)
+                toggled_meta = json.loads((toggled.parent / "metadata.json").read_text())
+                self.assertFalse(toggled_meta["training_config"]["compile_step"])
+                toggled_state = json.loads(toggled.read_text())
+                actual = mx.load(str(toggled.parent / toggled_state["model"]))
+                expected = mx.load(str(baseline.parent / baseline_state["model"]))
+                for name in actual:
+                    self.assertTrue(mx.allclose(actual[name], expected[name], atol=2e-6, rtol=2e-5).item(), name)
+                config.write_text(original_config.replace("stable_softmax=true", "stable_softmax=false"))
+                with self.assertRaisesRegex(ValueError, "model configuration"):
+                    train_from_config(config, resume=pointer)
+                config.write_text(original_config)
                 config.write_text(config.read_text().replace("batch_size=2", "batch_size=1"))
                 with self.assertRaisesRegex(ValueError, "batch_size"):
                     train_from_config(config, resume=pointer)

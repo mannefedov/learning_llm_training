@@ -556,3 +556,221 @@ Update this log before pushing work.
   and samples. No substantial training/downloads run by the agent; active process
   unaffected. PyTorch resume is outside this MLX change.
 - **Publishing:** User requested committing and pushing to `origin/main`.
+
+## 2026-11-14 — Audit recent softmax numerical report
+
+- **Research:** Barron, Gnanapragasam, and Tschannen, A Fix for Softmax and
+  Cross-Entropy (submitted October 22, revised October 29, 2026):
+  https://arxiv.org/abs/2610.31642 and https://jonbarron.info/softmaxfix/.
+  Distinguishes hard-target softmax collapse from soft-target cancellation.
+  Author page includes an erratum for NaN gradients in an earlier proposed fix
+  when masked rows have one effective finite logit; do not copy that early fix.
+- **Local verification:** Tiny float32 probes with logits [9,-9,-9], target 0,
+  reproduced collapse on PyTorch 2.15.0 CPU/MPS and MLX 0.32.4 CPU/Metal.
+  Cross-entropy loss and target gradient were zero; two non-target gradients
+  remained about 1.523e-8 each, giving gradient sum about 3.046e-8. Analytic loss
+  is 3.046e-8, target gradient -3.046e-8, with zero gradient sum. Probed actual
+  shared attention helpers too: dominant-probability gradients similarly lost
+  their maximum entry. Both full and SWA use those helpers. MLX's single-valid-key
+  masked row retained finite gradients with the existing library implementation.
+- **Scope:** Current hard-target loss and attention are susceptible under these
+  numerical conditions. Soft-target distillation cancellation is outside the
+  implemented training objective. Did not measure occurrence/severity on trained
+  checkpoints or infer damage to prior experiments. No model training, downloads,
+  dependency updates, production math changes, or active-process changes.
+- **Reproduction:** Temporary probe script/output remained under /private/tmp;
+  no speculative knowledge docs/notebook added. Next possible task is a focused
+  corrected-math implementation with masked-row/gradient regression checks.
+
+## 2026-11-14 — Opt-in corrected softmax training experiment
+
+- **Changes:** Added backend-specific stable log-softmax/softmax helpers using
+  an explicit pivot, sum of non-pivot exponentials, and log1p. Hard-target CE
+  gathers from the corrected log-softmax, keeping the implementation small.
+  Config `[model] stable_softmax=true` selects the corrected attention and loss
+  in both backends, plus PyTorch sampling. MLX categorical generation already
+  operates directly on logits. Defaults remain false for baseline/old configs.
+- **Source and differences:** https://jonbarron.info/softmaxfix/ section 2 and
+  masked-row erratum. Uses log1p directly, not log(sum) followed by softplus;
+  the latter can differentiate through log(0). MLX argmax indices explicitly
+  stop gradients, while the gathered pivot value remains differentiable.
+  This implements the correction needed for current attention/hard-target
+  training, not a new soft-target distillation objective. Rows require at least
+  one finite logit; existing causal/SWA masks keep self visible.
+- **Experiment:** Added sequential_gpt_mlx_swa_3to1_stable.toml matching the
+  current 3:1 config except stable_softmax and output path. Reuses the existing
+  cache. Checkpoint config records the flag; changing math during resume is
+  rejected, so use a fresh run for the comparison.
+- **Verification:** All 44 offline tests passed on the final run. Confident
+  float32 loss/target gradients remain nonzero on CPU, MPS, and Metal; actual
+  attention-helper gradients checked. Single finite/effectively finite rows,
+  one-key windows, ties, large/wrong-target logits, ordinary float64-reference
+  agreement, Torch double gradcheck, and 8k-class MLX reductions checked.
+  The 8k float32 reduction retains small rounding error (tested with relative
+  tolerances), rather than catastrophic loss of the dominant gradient.
+  Backend comparisons cover both flags across full/local/mixed attention.
+  Corrected-math checkpoint/resume/retention tests and changed-math rejection
+  passed. Experiment settings equivalence, README links, and whitespace checked.
+- **Left for user / next step:** Run the stable config from scratch and compare
+  curves/samples to the baseline. No substantial training, downloads, or speed
+  benchmark run, and no active-process changes or dependency upgrades. Existing
+  experiments and configs were preserved. Not committed or pushed.
+
+## 2026-11-14 — Research MLX custom-kernel optimization
+
+- **User observation:** User reports similar/worse generated examples and slower
+  corrected-math training after 400k steps; no controlled quality/speed analysis
+  performed in this session.
+- **Research:** Official MLX 0.32.4 guides for custom Metal kernels,
+  custom_function/VJP, and compile:
+  https://ml-explore.github.io/mlx/build/html/dev/custom_metal_kernels.html
+  https://ml-explore.github.io/mlx/build/html/python/_autosummary/mlx.core.custom_function.html
+  https://ml-explore.github.io/mlx/build/html/usage/compile.html
+- **Findings:** Python mx.fast.metal_kernel accepts Metal Shading Language source
+  with explicit launch grid/threadgroups and output shapes/dtypes. Training needs
+  a registered backward/VJP, commonly with a second custom kernel. mx.compile
+  can fuse some ordinary operations first. Safe math matters for masked -inf
+  and corrected reductions. Local standard MLX loss dispatches to fast.cross_entropy
+  on Metal; our correction is composed array operations, so extra kernels and
+  temporaries are plausible causes of slowdown, not a profiled attribution.
+- **Scope / next step:** Explained the kernel model and proposed first optimizing
+  corrected CE forward/backward, benchmarked against the reference and library.
+  No kernels implemented, benchmarks run, production changes, or new docs made;
+  user asked for general explanation only.
+
+## 2026-11-14 — Compile MLX forward/backward
+
+- **Changes:** Added opt-in `[training] compile_step=true` (default false).
+  Compiles the complete loss/value-and-gradient function once, with model.state
+  explicit as implicit inputs/outputs so optimizer updates cannot leave stale
+  captured weights. Optimizer updates, validation, generation, logging, and
+  checkpoint writes stay outside. Compilation is a runtime setting that may
+  change on resume, unlike the stable_softmax model setting.
+- **Experiment:** Added a compiled variant of the corrected 3:1 config, differing
+  only in compile_step and output path. Notebook 05 benchmarks native, corrected,
+  forward-only compilation, forward+backward compilation, and the full model.
+  Uses synthetic tensors and synchronized evaluations; no data/checkpoints loaded.
+- **Local measurements:** Forward-only compilation of corrected helpers showed
+  negligible benefit (~1.0x). Compiling isolated CE+gradient together reduced one
+  short measurement from ~12.9 to ~9.9 ms. Full four-layer model forward/backward
+  at batch 10/context 256/vocab 8000, after warmup and five measured evaluations:
+  native 11.183 ms, corrected 25.204 ms, compiled corrected 18.762 ms (~25.6% less
+  time than corrected, ~1.34x throughput). This final repeat ran after our tests
+  finished. Timings exclude optimizer, validation, generation, checkpointing,
+  and first-use compilation; not a full-training throughput/quality result.
+- **Verification:** All 45 offline tests passed. Checked compiled/uncompiled
+  confident and masked-row gradients, updates with changing weights, tiny mixed
+  models, checkpoint retention/resume, and toggling compilation during resume.
+  Config equivalence, notebook code syntax, README links, and whitespace passed.
+- **Left for user / next step:** Run the compiled config (or set compile_step in
+  the existing config and resume normally) and compare observed progress timing.
+  Notebook 05 reproduces isolated timings. No substantial training, custom GPU
+  kernels, new dependencies, or active-process changes. Changes uncommitted.
+
+## 2026-11-14 — Attention efficiency and model optimization audit
+
+- **Audit:** Full attention computes the complete score matrix and masks it
+  afterward. Existing SWA computes only nearby query/key tiles, giving O(TW)
+  score work, but still materializes tile scores/weights and runs separate
+  operations. Compilation does not substitute a specialized attention kernel.
+  Packed QKV, batched heads, tied embeddings, and mmap batches are already used.
+- **Research:** FlashAttention-2 uses tiling, online softmax/output accumulation,
+  on-chip storage, skipped wholly future blocks, and masking at boundaries.
+  Dense causal attention still has O(T²) arithmetic; local attention can restrict
+  work to O(TW). Source: https://arxiv.org/html/2307.08691v1 . Current MLX API:
+  https://ml-explore.github.io/mlx/build/html/python/_autosummary/mlx.core.fast.scaled_dot_product_attention.html
+  and version-pinned https://github.com/ml-explore/mlx/blob/v0.32.4/mlx/fast.cpp .
+- **Local probe:** Float32 [1,4,256,32] inputs on Metal accepted causal and band
+  masks with default fallback and finite forward/backward results. With
+  force_fused=True, causal attention failed because head dim 32 is unsupported
+  (message also notes float32/TF32 restrictions); band-masked attention failed
+  because fused backward accepts causal masking only, not an array mask.
+  Therefore the native fast API is not a verified fused drop-in for this setup.
+  Installed Python API has no native window_size keyword. Changing head layout
+  or precision needs a separate experiment; do not silently change architecture.
+- **Other candidates:** Output logits at batch 10/context 256/vocab 8000 occupy
+  ~78.1 MiB; one full layer's score matrix occupies 10 MiB. Corrected CE currently
+  materializes full log probabilities and is a strong optimization candidate.
+  Also consider measured optimizer/synchronization overhead, mixed precision as
+  a separate test, and generation's full-prefix recomputation/all-position output
+  projection. Learned positions require care when caching a sliding context.
+- **Scope:** Research/code inspection and a tiny synthetic compatibility probe
+  only. No production changes, new training, architecture changes, or speed
+  benchmark in this audit. Recommend preserving reference attention, profiling
+  components, then adding explicitly supported fused paths and corrected CE
+  kernels rather than expecting a causal mask alone to avoid score computation.
+
+## 2026-11-16 — Exploration backlog and fused full-attention experiment
+
+- Added docs/explorations/README.md for explicitly parked topics; AGENTS.md
+  records this cross-session convention as an exception to completed-work docs.
+  Parked fused SWA: MLX 0.32.4 array-mask backward restriction, source, and next
+  investigation (native window support or custom Metal kernels).
+- Earlier speedup was compilation, not fused attention. Added opt-in model
+  attention_backend=mlx_fused (reference remains default), using causal string
+  mask and force_fused=True. Unsupported GPU/shapes fail rather than fallback;
+  corrected softmax and SWA combinations rejected, PyTorch entry point rejects
+  this MLX-only setting. Checkpoint model equality includes the new field.
+- New sequential_gpt_mlx_full_fused.toml uses all-full attention, two heads of
+  size 64 (previous four heads had unsupported size 32), native softmax, GPU,
+  and compiled forward/backward. Existing token cache reused; new run required.
+  For kernel-only comparisons set backend=reference with same other settings.
+- Verification: 48 offline tests passed on Metal. Added output/QKV gradient
+  comparisons at lengths 16/33/256, short-prefix inference at 1/7, compiled tiny
+  model backward and generation, incompatible config rejection. Initial tight
+  tolerances exposed float32 fused/reference differences: fixed-seed synthetic
+  probes showed output max ~0.00204 and gradient max ~0.00189; tests allow
+  atol/rtol 0.003. Short prefixes <=8 support fused inference but not backward
+  in installed version; training config uses 256. TOML and git diff --check pass.
+- Left for user: run new config and inspect loss, samples, and throughput.
+  No substantial training or speed benchmark run; active training untouched.
+
+## 2026-11-16 — Upstream fused SWA research
+
+- Queried public GitHub API for all open MLX PRs and window/backward PR search;
+  no open windowed-backward implementation found. Relevant native window PR
+  #4734 merged 2026-10-23, after installed/latest stable v0.32.4. Current main
+  supports window_size for forward but has explicit output_logsumexp + window
+  rejection: window support for backward attention is NYI. Array mask restriction
+  also remains. Updated exploration backlog with findings and source links.
+- Release workflow schedules daily wheels/artifacts (scheduled publication is
+  disabled by its publish expression); did not install builds or change venv.
+  Main source itself still blocks fused windowed training, regardless of build.
+- PR #4563 (merged Sep 29) explains Metal backward performance tradeoff: a
+  specialized recomputing kernel did not improve speed; tiled Steel matmuls
+  provided memory savings and speed. This supports implementation complexity as
+  a likely reason for incremental coverage, not a confirmed maintainer reason
+  for SWA specifically. No substantial computations or active-run changes.
+
+## 2026-11-16 — Local SWA development setup
+
+- Cloned upstream main at fc344c986c4169d99f76b5d95ae6b4a58a359a63 into
+  ignored .local/mlx-swa; created experiment/windowed-backward branch.
+  Read upstream AGENTS.md; no kernel edits or upstream submissions made.
+- Created isolated .local/venv-mlx-swa and installed CMake, setuptools,
+  typing_extensions, numpy, pytest, pre-commit. Training .venv unchanged.
+- Added experiments/mlx_swa README and synthetic forward/QKV-gradient probe.
+  Expected-failure flag checks the specific upstream window backward rejection;
+  default mode requires implemented gradients. Covers self-only, partial tiles,
+  window larger than sequence, and 256/64. Syntax and diff checks passed.
+- BLOCKER: full Xcode is absent from /Applications; active developer path is
+  CommandLineTools and xcrun cannot find metal. Build and GPU probe remain unrun.
+  User must install/initialize Xcode and Metal toolchain, then follow README
+  build/probe commands. Next: verify pristine build and reproduce guard, then
+  implement window propagation and tile bounds in backward.
+
+## 2026-11-16 — Save iteration before local kernel work
+
+- Commit includes corrected softmax/CE, compiled MLX forward/backward, forced
+  fused full-attention config, numerical/attention tests and benchmark notebook,
+  exploration backlog convention, and isolated SWA development instructions/probe.
+- Verification carried forward: 48 offline tests passed on Metal after model
+  changes; SWA probe syntax and whitespace checks passed. Full training outcomes
+  are user-run, not agent-verified.
+- Xcode 27.2 and Metal Toolchain 27B47 now verified installed; metal --version
+  works outside sandbox with DEVELOPER_DIR set. Updated build instructions.
+- Isolated editable MLX build started in exec session 18709 and is still running
+  at this checkpoint. Checkout fc344c9, local experiment/windowed-backward branch,
+  .local/venv-mlx-swa. These ignored local assets are not included in this commit.
+- Next iteration: inspect build result, run expected-failure SWA probe, then
+  implement/test windowed backward. No upstream kernel edits yet.

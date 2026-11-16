@@ -12,8 +12,19 @@ class GPTConfig:
     d_model: int = 128
     attention_types: list[str] | None = None
     sliding_window: int | None = None
+    stable_softmax: bool = False
+    attention_backend: str = "reference"
 
     def __post_init__(self):
+        if self.attention_backend not in ("reference", "mlx_fused"):
+            raise ValueError("attention_backend must be reference or mlx_fused")
+        if self.attention_backend == "mlx_fused":
+            if self.stable_softmax:
+                raise ValueError("mlx_fused uses native softmax; set stable_softmax=false")
+            if self.attention_types and "sliding_window" in self.attention_types:
+                raise ValueError("mlx_fused supports full attention only")
+        if not isinstance(self.stable_softmax, bool):
+            raise ValueError("stable_softmax must be a boolean")
         if self.attention_types is not None:
             if (not isinstance(self.attention_types, list)
                     or len(self.attention_types) != self.n_layers

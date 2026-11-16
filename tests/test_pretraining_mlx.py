@@ -287,10 +287,11 @@ class PretrainingTests(unittest.TestCase):
     @unittest.skipUnless(importlib.util.find_spec("torch"), "PyTorch is optional")
     def test_matches_pytorch_forward_and_optimizer_update(self):
         for attention_types in (None, ["sliding_window"], ["sliding_window", "full"]):
-            with self.subTest(attention_types=attention_types):
-                self.check_pytorch_forward_and_optimizer_update(attention_types)
+            for stable in (False, True):
+                with self.subTest(attention_types=attention_types, stable=stable):
+                    self.check_pytorch_forward_and_optimizer_update(attention_types, stable)
 
-    def check_pytorch_forward_and_optimizer_update(self, attention_types):
+    def check_pytorch_forward_and_optimizer_update(self, attention_types, stable):
         import numpy as np
         import torch
         from llm_training.models.gpt import GPT as TorchGPT, GPTConfig as TorchConfig
@@ -299,7 +300,7 @@ class PretrainingTests(unittest.TestCase):
         dimensions = dict(vocab_size=8, context_length=7,
                           n_layers=len(attention_types) if attention_types else 1,
                           n_heads=2, d_model=8, attention_types=attention_types,
-                          sliding_window=2 if attention_types else None)
+                          sliding_window=2 if attention_types else None, stable_softmax=stable)
         reference = TorchGPT(TorchConfig(**dimensions))
         model = GPT(GPTConfig(**dimensions))
         weights = dict(reference.named_parameters())

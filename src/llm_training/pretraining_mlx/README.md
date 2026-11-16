@@ -79,6 +79,21 @@ token limit. Explore interactively in [the generation notebook](../../../noteboo
 The run directory contains metrics, metadata, config/tokenizer copies, sample
 text, and `checkpoint.json` pointing to the latest saved state in `checkpoints/`.
 
+## Compile forward/backward
+
+```toml
+[training]
+compile_step = true
+```
+
+This compiles model forward/backward together. Optimizer updates, validation,
+sampling, and file writes stay outside. The first batch includes compilation
+work. Defaults to `false`; it can be changed on resume.
+
+The corrected-math compiled config is
+`configs/pretraining/sequential_gpt_mlx_swa_3to1_stable_compiled.toml`.
+For timings, use [notebook 05](../../../notebooks/05_compile_numerics.ipynb).
+
 ## Checkpoint and resume
 
 ```toml
@@ -111,3 +126,6 @@ can resume; earlier checkpoints still work for generation.
 
 For loss plots, install `.[analysis]` and open
 [the comparison notebook](../../../notebooks/03_compare_run_losses.ipynb).
+
+For a fused full-attention experiment, use the
+[model instructions](../models/README.md#fused-full-attention-mlx).

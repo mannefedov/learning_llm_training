@@ -11,6 +11,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from .config import GPTConfig
+from .numerics import stable_cross_entropy, stable_softmax
 from .attention import CausalSelfAttention, build_attention
 
 
@@ -34,6 +35,8 @@ class Block(nn.Module):
 class GPT(nn.Module):
     def __init__(self, config: GPTConfig):
         super().__init__()
+        if config.attention_backend != "reference":
+            raise ValueError("mlx_fused attention requires the MLX training entry point")
         self.config = config
         self.token_embedding = nn.Embedding(config.vocab_size, config.d_model)
         self.position_embedding = nn.Embedding(config.context_length, config.d_model)
@@ -68,7 +71,8 @@ class GPT(nn.Module):
         if targets is not None:
             if targets.shape != input_ids.shape:
                 raise ValueError("targets must have the same shape as input_ids")
-            loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
+            loss = (stable_cross_entropy(logits, targets) if self.config.stable_softmax else
+                    F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1)))
         return logits, loss
 
     @torch.no_grad()
@@ -79,7 +83,8 @@ class GPT(nn.Module):
         for _ in range(max_new_tokens):
             context = input_ids[:, -self.config.context_length:]
             logits, _ = self(context)
-            probabilities = F.softmax(logits[:, -1] / temperature, dim=-1)
+            scores = logits[:, -1] / temperature
+            probabilities = stable_softmax(scores) if self.config.stable_softmax else F.softmax(scores, dim=-1)
             next_id = torch.multinomial(probabilities, num_samples=1)
             input_ids = torch.cat((input_ids, next_id), dim=1)
         return input_ids

@@ -221,3 +221,6 @@ __marimo__/
 
 # Local training artifacts
 /artifacts/
+
+# Local upstream development checkouts
+/.local/

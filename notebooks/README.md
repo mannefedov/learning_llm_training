@@ -10,6 +10,7 @@ the loss notebook also detects when the kernel starts inside `notebooks/`.
 | [02 — Generation](02_mlx_generation.ipynb) | Sample a saved MLX model |
 | [03 — Loss curves](03_compare_run_losses.ipynb) | Compare runs; rerun the final cell to refresh |
 | [04 — Attention](04_attention_variants.ipynb) | Compare full and sliding-window masks |
+| [05 — Compilation](05_compile_numerics.ipynb) | Benchmark native, corrected, and compiled math |
 
 Install the extras needed by your notebook:
 

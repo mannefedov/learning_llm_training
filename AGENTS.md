@@ -37,6 +37,10 @@ related topics. The goal is understanding and interview preparation.
 - Freeform explorations belong in the top-level `notebooks/` directory.
 - `docs/` documents knowledge and work actually done, not suggestions, plans,
   or exercises. Create or expand knowledge docs only on direct user request.
+- Store explicitly deferred exploration topics in `docs/explorations/README.md`.
+  Keep each entry short: question, current blocker/context, and next experiment
+  or source. This backlog is the exception to the completed-work-only docs rule;
+  update it when the user parks or resumes a topic.
 - Do not create speculative notes just because a topic was discussed or researched.
 - Put requested examples and exercises in notebooks, with supporting references
   in their Markdown cells until documentation is explicitly requested.

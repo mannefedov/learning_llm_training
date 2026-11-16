@@ -6,11 +6,13 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from .config import GPTConfig
+from .numerics_mlx import stable_softmax
 
 
-def masked_attention(q, k, v, allowed):
+def masked_attention(q, k, v, allowed, *, stable=False):
     scores = (q @ k.swapaxes(-2, -1)) / math.sqrt(q.shape[-1])
-    weights = mx.softmax(mx.where(allowed, scores, -float("inf")), axis=-1)
+    scores = mx.where(allowed, scores, -float("inf"))
+    weights = stable_softmax(scores) if stable else mx.softmax(scores, axis=-1)
     return weights @ v
 
 
@@ -18,12 +20,20 @@ class CausalSelfAttention(nn.Module):
     def __init__(self, config: GPTConfig):
         super().__init__()
         self.n_heads = config.n_heads
+        self.backend = config.attention_backend
+        self.stable_softmax = config.stable_softmax
         self.qkv = nn.Linear(config.d_model, 3 * config.d_model)
         self.proj = nn.Linear(config.d_model, config.d_model)
 
     def attend(self, q, k, v):
+        if self.backend == "mlx_fused":
+            # The string mask enables fused causal backward; an array mask does not.
+            return mx.fast.scaled_dot_product_attention(
+                q, k, v, scale=1 / math.sqrt(q.shape[-1]),
+                mask="causal", force_fused=True)
         positions = mx.arange(q.shape[2])
-        return masked_attention(q, k, v, positions[:, None] >= positions[None, :])
+        return masked_attention(q, k, v, positions[:, None] >= positions[None, :],
+                                stable=self.stable_softmax)
 
     def __call__(self, x):
         batch, length, width = x.shape
@@ -52,7 +62,7 @@ class SlidingWindowAttention(CausalSelfAttention):
             distance = mx.arange(start, end)[:, None] - mx.arange(key_start, end)[None, :]
             allowed = (distance >= 0) & (distance < self.window_size)
             tiles.append(masked_attention(q[:, :, start:end], k[:, :, key_start:end],
-                                          v[:, :, key_start:end], allowed))
+                                          v[:, :, key_start:end], allowed, stable=self.stable_softmax))
         return mx.concatenate(tiles, axis=2)
 
 

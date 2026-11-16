@@ -29,8 +29,11 @@ class TrainConfig:
     seed: int = 42
     device: str = "auto"
     sampling: str = "random"
+    compile_step: bool = False
 
     def __post_init__(self):
+        if not isinstance(self.compile_step, bool):
+            raise ValueError("compile_step must be a boolean")
         if self.sampling not in ("random", "sequential"):
             raise ValueError("sampling must be random or sequential")
         if min(self.steps, self.batch_size, self.eval_every, self.eval_batches) < 1:
@@ -63,6 +66,15 @@ def make_optimizer(config: TrainConfig):
                        weight_decay=config.weight_decay, bias_correction=True)
 
 
+def make_loss_and_grad(model: GPT, compile_step: bool = False):
+    function = nn.value_and_grad(model, lambda x, y: model(x, y)[1])
+    if compile_step:
+        # Include both forward and backward. Explicit state inputs/outputs keep
+        # current weights visible across optimizer updates and avoid stale captures.
+        function = mx.compile(function, inputs=model.state, outputs=model.state)
+    return function
+
+
 def evaluate(model: GPT, tokens, config: TrainConfig) -> float:
     was_training = model.training
     model.eval()
@@ -89,7 +101,7 @@ def train(model: GPT, train_tokens, val_tokens, config: TrainConfig,
     if not 0 <= start_step <= config.steps:
         raise ValueError("start_step must be within the training budget")
     optimizer = make_optimizer(config) if optimizer is None else optimizer
-    loss_and_grad = nn.value_and_grad(model, lambda model, x, y: model(x, y)[1])
+    loss_and_grad = make_loss_and_grad(model, config.compile_step)
     generator = random.Random(config.seed)
     if batch_rng_state is not None:
         generator.setstate(batch_rng_state)
@@ -107,7 +119,7 @@ def train(model: GPT, train_tokens, val_tokens, config: TrainConfig,
                 x, y = sequential_batch(train_tokens, config.batch_size, model.config.context_length, step - 1)
             else:
                 x, y = get_batch(train_tokens, config.batch_size, model.config.context_length, generator)
-            loss, gradients = loss_and_grad(model, x, y)
+            loss, gradients = loss_and_grad(x, y)
             if not mx.isfinite(loss).item():
                 raise RuntimeError(f"Non-finite loss at step {step}")
             gradients, _ = optim.clip_grad_norm(gradients, config.grad_clip)
