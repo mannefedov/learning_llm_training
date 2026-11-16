@@ -19,7 +19,9 @@ class TrainingProgress:
     sampling. It excludes data preparation and final checkpoint writing.
     """
 
-    def __init__(self, total: int, start_step: int = 0, steps_per_epoch: int | None = None):
+    def __init__(self, total: int, start_step: int = 0, steps_per_epoch: int | None = None,
+                 tokens_per_step: int = 0):
+        self.tokens_per_step = tokens_per_step
         self.total = total
         self.steps_per_epoch = steps_per_epoch
         self.step = start_step
@@ -46,6 +48,13 @@ class TrainingProgress:
         if time.monotonic() - self.last_display >= interval:
             self._display()
 
+    def metrics(self):
+        """Wall-clock throughput for this invocation; count training targets once."""
+        elapsed = time.monotonic() - self.started
+        tokens = (self.step - self.start_step) * self.tokens_per_step
+        return {"elapsed_seconds": elapsed, "tokens_processed": tokens,
+                "tokens_per_second": tokens / elapsed if tokens and elapsed > 0 else None}
+
     def _display(self, status="training"):
         now = time.monotonic()
         elapsed = now - self.started
@@ -60,8 +69,12 @@ class TrainingProgress:
             losses += f" val={self.val_loss:.4f}"
         epochs = (f" epochs={self.step / self.steps_per_epoch:.2f}/{self.total / self.steps_per_epoch:.2f}"
                   if self.steps_per_epoch else "")
+        rate = ""
+        if self.tokens_per_step:
+            speed = completed * self.tokens_per_step / elapsed if completed and elapsed > 0 else None
+            rate = f" tok/s={speed:,.0f}" if speed is not None else " tok/s=--"
         line = (f"{status} [{bar}] {100 * self.step / self.total:5.1f}% "
-                f"{self.step}/{self.total} elapsed={format_duration(elapsed)} ETA={eta}{epochs}{losses}")
+                f"{self.step}/{self.total}{rate} elapsed={format_duration(elapsed)} ETA={eta}{epochs}{losses}")
         if self.interactive:
             # Avoid wrapping an updating line on narrow terminals.
             width = max(1, shutil.get_terminal_size().columns - 1)

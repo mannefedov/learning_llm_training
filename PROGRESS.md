@@ -774,3 +774,46 @@ Update this log before pushing work.
   .local/venv-mlx-swa. These ignored local assets are not included in this commit.
 - Next iteration: inspect build result, run expected-failure SWA probe, then
   implement/test windowed backward. No upstream kernel edits yet.
+
+
+### 2026-11-16 — MLX window backward, throughput metrics, and parked kernel experiments
+
+- Added `mlx_fused_window` model backend and 4K 3local/1full training config.
+  Preserved user's batch8/15625-step budget; corrected its explanatory comment.
+  Window backend requires the isolated patched MLX environment. Reference and
+  full-only fused backends remain available.
+- Added cumulative elapsed/tokens/tok-per-second reporting to Torch and MLX
+  training progress and CSV metrics. Notebook parser accepts both old and new
+  CSV columns. Throughput includes in-loop reporting/evaluation/sampling costs.
+- Local MLX starts at fc344c986c4169d99f76b5d95ae6b4a58a359a63. Saved three ordered
+  patches: causal_window_backward, flash64_backward, flash64_nax_backward.
+  First extends tiled backward with causal windows; second adds FP32/D64 on-chip
+  SIMD kernels; third adds M5 TensorOps/register tiles and three tile shapes.
+  Exact patch-chain reconstruction verified against current local source.
+  Mode0(default)=tiled; mode1=SIMD/TF32off; mode2=NAX/TF32on. NAX16 means16×32
+  Q/K tile. Other experimental restrictions: equal heads/lengths, causal,D64.
+- Benchmarks located most time in forward/backward; optimizer compilation/data
+  loading did not offer substantial gains. Smaller tiled backward blocks helped
+  small batches. Original SIMD prototype saved memory but was slower and needed
+  TF32off for consistent recomputation. NAX restored native TF32 compatibility.
+  Short paired benchmarks suggested ~3–4% B2/~11% B8 gains over tuned tiled256,
+  but user observed no noticeable gain in actual training. Parked without changing
+  defaults. Resume with matched real-run timing and GPU counters before further
+  tile reuse/pipelining work. BF16 and long-document continuation remain deferred.
+- Verification before parking:60 strict attention comparisons across three NAX
+  tile shapes; initial model-gradient differences <=7.57e-6; shape/precision guards,
+  eager/compiled and window isolation passed. Default regression17tests and two
+  experimental window tests passed. Original SIMD FP32 smoke still passed.
+  Multi-update parameter equality failed, including unchanged-native repeats;
+  small loss differences do not establish long-run quality. Diagnostic suites
+  retain failed-array reporting; strict initial-gradient checks still raise.
+- Kept reproducible scripts/tests/patches and concise experiment README. Raw results,
+  intermediate reports and detailed session log archived locally under ignored
+  `.local/mlx-swa-reports-2026-11-16/`; excluded from this commit at user's request.
+  No long training/quality run performed by agent. Current user training left alone.
+  Final commit checks: focused CPU test suite, Python syntax, notebook syntax and
+  Git whitespace checks (outcome recorded below). User requested commit, no push.
+- Final verification:29 focused tests ran (28passed,1expected skip for the custom
+  MLX API in the stock environment). Experiment scripts and notebook code cells
+  parsed/compiled; git diff --check passed. GPU tests were not rerun while the
+  user's training is active; results above were obtained before that run.

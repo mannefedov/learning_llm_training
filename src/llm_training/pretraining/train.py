@@ -63,7 +63,7 @@ def train(
     train_tokens: torch.Tensor,
     val_tokens: torch.Tensor,
     config: TrainConfig,
-    record_metrics: Callable[[int, float | None, float], None] | None = None,
+    record_metrics: Callable[..., None] | None = None,
 ):
     """Optimize for a fixed number of updates and return the optimizer for saving."""
     device = choose_device(config.device)
@@ -81,11 +81,11 @@ def train(
     )
     generator = torch.Generator().manual_seed(config.seed)
     print(f"Device: {device}; parameters: {sum(p.numel() for p in parameters):,}")
-    with TrainingProgress(config.steps) as progress:
+    with TrainingProgress(config.steps, tokens_per_step=config.batch_size * model.config.context_length) as progress:
         val_loss = evaluate(model, val_tokens, config)
         progress.update(0, val_loss=val_loss)
         if record_metrics is not None:
-            record_metrics(0, None, val_loss)
+            record_metrics(0, None, val_loss, progress.metrics())
         for step in range(1, config.steps + 1):
             x, y = get_batch(train_tokens, config.batch_size, model.config.context_length, device, generator)
             optimizer.zero_grad(set_to_none=True)
@@ -99,6 +99,6 @@ def train(
                 val_loss = evaluate(model, val_tokens, config)
                 progress.update(step, train_loss=loss.item(), val_loss=val_loss)
                 if record_metrics is not None:
-                    record_metrics(step, loss.item(), val_loss)
+                    record_metrics(step, loss.item(), val_loss, progress.metrics())
             progress.update(step)
     return optimizer

@@ -40,3 +40,8 @@ For loss plots, install `.[analysis]` and open
 [the comparison notebook](../../../notebooks/03_compare_run_losses.ipynb).
 Periodic sample files and the generation CLI currently belong to the
 [MLX path](../pretraining_mlx/README.md).
+
+Progress shows `tok/s`: average training tokens per second since this start/resume,
+including validation, sampling, checkpointing, and compilation time where applicable.
+`metrics.csv` records `tokens_per_second`, `tokens_processed`, and `elapsed_seconds`
+at each loss evaluation. Each batch counts `batch_size × context_length` tokens.

@@ -52,12 +52,14 @@ def log_run(output_dir: Path, metadata: dict):
     save_metadata()
     try:
         with (output_dir / "metrics.csv").open("x", newline="", encoding="utf-8") as file:
-            writer = csv.DictWriter(file, fieldnames=["step", "train_loss", "val_loss"])
+            writer = csv.DictWriter(file, fieldnames=["step", "train_loss", "val_loss",
+                                                      "elapsed_seconds", "tokens_processed", "tokens_per_second"])
             writer.writeheader()
             file.flush()
 
-            def record(step, train_loss, val_loss):
-                writer.writerow({"step": step, "train_loss": train_loss, "val_loss": val_loss})
+            def record(step, train_loss, val_loss, efficiency=None):
+                writer.writerow({"step": step, "train_loss": train_loss, "val_loss": val_loss,
+                                 **(efficiency or {})})
                 file.flush()
 
             yield record

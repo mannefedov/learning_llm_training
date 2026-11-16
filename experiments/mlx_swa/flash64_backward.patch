@@ -1,0 +1,180 @@
+--- a/mlx/backend/metal/scaled_dot_product_attention.cpp
++++ b/mlx/backend/metal/scaled_dot_product_attention.cpp
+@@ -2019,6 +2019,37 @@
+   compute_encoder.dispatch_threads(
+       MTL::Size(32, qL, B * H), MTL::Size(32, 1, 1));
+ 
++  if (config::get("MLX_SDPA_VJP_FLASH64", 0) != 0) {
++    // Recomputed scores must use the same precision as forward's saved LSE.
++    if (env::enable_tf32()) {
++      throw std::runtime_error(
++          "[SDPA flash64 experiment] requires MLX_ENABLE_TF32=0");
++    }
++    if (q.dtype() != float32 || q.shape(3) != 64 || Dv != 64 ||
++        k.shape(1) != H || k.shape(2) != qL || !do_causal_) {
++      throw std::runtime_error(
++          "[SDPA flash64 experiment] requires FP32, D64, equal heads/lengths, causal");
++    }
++    for (const auto* name : {"sdpa_vjp_flash64_dq", "sdpa_vjp_flash64_dkv"}) {
++      compute_encoder.set_compute_pipeline_state(d.get_kernel(name));
++      compute_encoder.set_input_array(q, 0);
++      compute_encoder.set_input_array(k, 1);
++      compute_encoder.set_input_array(v, 2);
++      compute_encoder.set_input_array(cot_o, 3);
++      compute_encoder.set_input_array(lse, 4);
++      compute_encoder.set_input_array(odo, 5);
++      compute_encoder.set_output_array(dq, 6);
++      compute_encoder.set_output_array(dk, 7);
++      compute_encoder.set_output_array(dv, 8);
++      compute_encoder.set_bytes(qL, 9);
++      compute_encoder.set_bytes(scale_, 10);
++      compute_encoder.set_bytes(window_size_, 11);
++      compute_encoder.dispatch_threadgroups(
++          MTL::Size((qL + 7) / 8, 1, B * H), MTL::Size(32, 1, 1));
++    }
++    return;
++  }
++
+   sdpa_vjp_blocked(
+       s, d, q, k, v, odo, lse, cot_o, dq, dk, dv, scale_, do_causal_, window_size_);
+ }
+--- a/mlx/backend/metal/kernels/scaled_dot_product_attention_vjp.metal
++++ b/mlx/backend/metal/kernels/scaled_dot_product_attention_vjp.metal
+@@ -154,3 +154,137 @@
+ instantiate_sdpa_vjp_reduce(float, float);
+ instantiate_sdpa_vjp_reduce(float16_t, float16_t);
+ instantiate_sdpa_vjp_reduce(bfloat16_t, bfloat16_t);
++
++// Experimental FP32/D64 backward. Score and probability tiles stay on chip.
++// Separate query/key ownership avoids atomics, at the cost of recomputation.
++template <bool QueryGradient>
++[[kernel]] void sdpa_vjp_flash64(
++    const device float* q [[buffer(0)]],
++    const device float* k [[buffer(1)]],
++    const device float* v [[buffer(2)]],
++    const device float* grad_o [[buffer(3)]],
++    const device float* lse [[buffer(4)]],
++    const device float* delta [[buffer(5)]],
++    device float* grad_q [[buffer(6)]],
++    device float* grad_k [[buffer(7)]],
++    device float* grad_v [[buffer(8)]],
++    constant int& length [[buffer(9)]],
++    constant float& scale [[buffer(10)]],
++    constant int& window [[buffer(11)]],
++    uint3 group [[threadgroup_position_in_grid]],
++    uint lane [[thread_index_in_threadgroup]]) {
++  threadgroup float qt[8 * 64], kt[8 * 64], vt[8 * 64], ot[8 * 64];
++  threadgroup float prob[8 * 8], ds[8 * 8];
++  threadgroup float result[8 * 64];
++  simdgroup_float8x8 acc[8], acc_v[8];
++  for (int d = 0; d < 8; ++d) {
++    acc[d] = make_filled_simdgroup_matrix<float, 8>(0.f);
++    acc_v[d] = make_filled_simdgroup_matrix<float, 8>(0.f);
++  }
++  const int owned = int(group.x) * 8;
++  const size_t base = size_t(group.z) * length * 64;
++  const size_t row_base = size_t(group.z) * length;
++  for (int a = int(lane); a < 8 * 64; a += 32) {
++    const int row = owned + a / 64;
++    const size_t index = base + size_t(row) * 64 + a % 64;
++    if (QueryGradient) {
++      qt[a] = row < length ? q[index] : 0.f;
++      ot[a] = row < length ? grad_o[index] : 0.f;
++    } else {
++      kt[a] = row < length ? k[index] : 0.f;
++      vt[a] = row < length ? v[index] : 0.f;
++    }
++  }
++  const int first = QueryGradient
++      ? (window > 0 ? max(0, owned - window + 1) / 8 * 8 : 0)
++      : owned;
++  const int end = QueryGradient ? min(length, owned + 8)
++      : (window > 0 ? min(length, owned + 8 + window - 1) : length);
++  for (int other = first; other < end; other += 8) {
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++    for (int a = int(lane); a < 8 * 64; a += 32) {
++      const int row = other + a / 64;
++      const size_t index = base + size_t(row) * 64 + a % 64;
++      if (QueryGradient) {
++        kt[a] = row < length ? k[index] : 0.f;
++        vt[a] = row < length ? v[index] : 0.f;
++      } else {
++        qt[a] = row < length ? q[index] : 0.f;
++        ot[a] = row < length ? grad_o[index] : 0.f;
++      }
++    }
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++    auto scores = make_filled_simdgroup_matrix<float, 8>(0.f);
++    auto dp = make_filled_simdgroup_matrix<float, 8>(0.f);
++    simdgroup_float8x8 a, b;
++    for (int d = 0; d < 64; d += 8) {
++      simdgroup_load(a, qt + d, 64);
++      simdgroup_load(b, kt + d, 64, ulong2(0), true);
++      simdgroup_multiply_accumulate(scores, a, b, scores);
++      simdgroup_load(a, ot + d, 64);
++      simdgroup_load(b, vt + d, 64, ulong2(0), true);
++      simdgroup_multiply_accumulate(dp, a, b, dp);
++    }
++    simdgroup_store(scores, prob, 8);
++    simdgroup_store(dp, ds, 8);
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++    for (int a = int(lane); a < 64; a += 32) {
++      const int qi = (QueryGradient ? owned : other) + a / 8;
++      const int kj = (QueryGradient ? other : owned) + a % 8;
++      const bool allowed = qi < length && kj < length && kj <= qi &&
++          (window <= 0 || qi - kj < window);
++      float p = 0.f, g = 0.f;
++      if (allowed) {
++        p = metal::fast::exp(prob[a] * scale - lse[row_base + qi]);
++        g = p * (ds[a] - delta[row_base + qi]) * scale;
++      }
++      prob[a] = p;
++      ds[a] = g;
++    }
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++    if (QueryGradient) {
++      simdgroup_load(a, ds, 8);
++      for (int d = 0; d < 8; ++d) {
++        simdgroup_load(b, kt + d * 8, 64);
++        simdgroup_multiply_accumulate(acc[d], a, b, acc[d]);
++      }
++    } else {
++      simdgroup_load(a, ds, 8, ulong2(0), true);
++      for (int d = 0; d < 8; ++d) {
++        simdgroup_load(b, qt + d * 8, 64);
++        simdgroup_multiply_accumulate(acc[d], a, b, acc[d]);
++      }
++      simdgroup_load(a, prob, 8, ulong2(0), true);
++      for (int d = 0; d < 8; ++d) {
++        simdgroup_load(b, ot + d * 8, 64);
++        simdgroup_multiply_accumulate(acc_v[d], a, b, acc_v[d]);
++      }
++    }
++  }
++  for (int d = 0; d < 8; ++d) {
++    simdgroup_store(acc[d], result + d * 8, 64);
++  }
++  threadgroup_barrier(mem_flags::mem_threadgroup);
++  for (int a = int(lane); a < 8 * 64; a += 32) {
++    const int row = owned + a / 64;
++    if (row < length) {
++      const size_t index = base + size_t(row) * 64 + a % 64;
++      if (QueryGradient) grad_q[index] = result[a];
++      else grad_k[index] = result[a];
++    }
++  }
++  if (!QueryGradient) {
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++    for (int d = 0; d < 8; ++d) {
++      simdgroup_store(acc_v[d], result + d * 8, 64);
++    }
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++    for (int a = int(lane); a < 8 * 64; a += 32) {
++      const int row = owned + a / 64;
++      if (row < length) grad_v[base + size_t(row) * 64 + a % 64] = result[a];
++    }
++  }
++}
++
++instantiate_kernel("sdpa_vjp_flash64_dq", sdpa_vjp_flash64, true);
++instantiate_kernel("sdpa_vjp_flash64_dkv", sdpa_vjp_flash64, false);

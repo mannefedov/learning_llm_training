@@ -70,3 +70,6 @@ eight tokens in MLX 0.32.4; shorter prefixes work for generation. It cannot be c
 `stable_softmax = true` or SWA. The default backend remains `reference`.
 
 [Exploration backlog](../../../docs/explorations/README.md).
+
+For the experimental patched SWA backend, see the
+[4K training command](../pretraining_mlx/README.md#experimental-fused-swa-at-4k).

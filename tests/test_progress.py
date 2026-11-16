@@ -1,9 +1,13 @@
 """Deterministic progress timing and terminal/log output checks."""
 
 from contextlib import redirect_stdout
+import csv
 import io
 import os
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from llm_training.pretraining.tracking import log_run
 from unittest.mock import patch
 
 from llm_training.pretraining.progress import TrainingProgress, format_duration
@@ -62,6 +66,27 @@ class ProgressTests(unittest.TestCase):
                 progress.update(60)
         self.assertIn("60.0% 60/100 elapsed=00:00:30 ETA=00:02:00", output.getvalue())
         self.assertIn("epochs=1.20/2.00", output.getvalue())
+
+    def test_throughput_resume_and_saved_metrics(self):
+        with TemporaryDirectory() as temporary, redirect_stdout(io.StringIO()) as output, patch(
+            "llm_training.pretraining.progress.time.monotonic", return_value=0
+        ) as clock:
+            with TrainingProgress(100, start_step=50, tokens_per_step=8192) as progress:
+                self.assertIsNone(progress.metrics()["tokens_per_second"])
+                clock.return_value = 40
+                progress.update(60)
+                progress.update(60)  # A second display update must not count tokens twice.
+                metrics = progress.metrics()
+                self.assertEqual(metrics["elapsed_seconds"], 40)
+                self.assertEqual(metrics["tokens_processed"], 81920)
+                self.assertEqual(metrics["tokens_per_second"], 2048)
+                with log_run(Path(temporary), {}) as record:
+                    record(60, 3.0, 3.1, metrics)
+            self.assertIn("tok/s=2,048", output.getvalue())
+            with (Path(temporary) / "metrics.csv").open() as file:
+                row = next(csv.DictReader(file))
+            self.assertEqual(float(row["tokens_per_second"]), 2048)
+            self.assertEqual(int(row["tokens_processed"]), 81920)
 
     def test_duration(self):
         self.assertEqual(format_duration(3661.9), "01:01:01")

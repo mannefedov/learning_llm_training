@@ -36,7 +36,7 @@ class GPT(nn.Module):
     def __init__(self, config: GPTConfig):
         super().__init__()
         if config.attention_backend != "reference":
-            raise ValueError("mlx_fused attention requires the MLX training entry point")
+            raise ValueError("Fused MLX attention requires the MLX training entry point")
         self.config = config
         self.token_embedding = nn.Embedding(config.vocab_size, config.d_model)
         self.position_embedding = nn.Embedding(config.context_length, config.d_model)

@@ -1,42 +1,85 @@
-# Local MLX SWA development
+# Local MLX attention experiments
 
-Prerequisite: install full **Xcode** (including the Metal toolchain), launch it
-once to finish setup, then verify `xcrun metal --version` succeeds. If needed, select it:
+Parked: NAX backward showed no noticeable gain in the user's training run.
+The existing tiled backward remains the default. Keep this code for learning
+and later profiling; no long-run quality comparison has been performed.
+
+## Build
+
+Requires full Xcode with the Metal toolchain, a local MLX checkout at
+`fc344c986c4169d99f76b5d95ae6b4a58a359a63`, and an isolated Python environment.
+Checkout: `.local/mlx-swa`; environment: `.local/venv-mlx-swa`.
+[Upstream build instructions](https://ml-explore.github.io/mlx/build/html/install.html#build-from-source).
+
+For a fresh checkout, apply these patches in order (skip already applied patches):
 
 ```sh
-sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
-```
-
-From the training repo root, build in the isolated environment:
-
-```sh
-export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+git -C .local/mlx-swa apply ../../experiments/mlx_swa/causal_window_backward.patch
+git -C .local/mlx-swa apply ../../experiments/mlx_swa/flash64_backward.patch
+git -C .local/mlx-swa apply ../../experiments/mlx_swa/flash64_nax_backward.patch
 source .local/venv-mlx-swa/bin/activate
-cd .local/mlx-swa
-python -m pip install -e '.[dev]'
-cd ../..
-python experiments/mlx_swa/probe.py --expect-backward-unavailable
-```
-
-The probe checks fused windowed forward and confirms the current backward error.
-After implementing backward, run it without the flag to compare Q/K/V gradients.
-It starts with head size 64, float32, causal windows, and small synthetic inputs.
-
-Rebuild after changing MLX:
-
-```sh
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cd .local/mlx-swa
 python setup.py build_ext --inplace
+cd ../..
 ```
 
-Checkout: `.local/mlx-swa`, branch `experiment/windowed-backward`.
-Starting commit: `fc344c986c4169d99f76b5d95ae6b4a58a359a63`.
-The checkout and environment are ignored by the training repo; keep kernel
-changes in that checkout's branch. The training repo's `.venv` is separate.
+## Select backward
 
-Start in `mlx/backend/metal/scaled_dot_product_attention.cpp`: search for
-`window support for backward attention is NYI` and `SDPAVJPTileParams`.
-Trace window parameters through backward dispatch and tile computations before
-removing the guard. Extend `python/tests/test_fast_sdpa.py` for upstream tests.
+Set environment variables before starting Python:
 
-[MLX build instructions](https://ml-explore.github.io/mlx/build/html/install.html#build-from-source).
+| Mode | Variables | Requirements |
+| --- | --- | --- |
+| Existing tiled (default) | `MLX_SDPA_VJP_FLASH64=0` | Native fused attention |
+| On-chip SIMD prototype | `MLX_SDPA_VJP_FLASH64=1 MLX_ENABLE_TF32=0` | FP32, D64, equal heads/lengths, causal |
+| M5 NAX prototype | `MLX_SDPA_VJP_FLASH64=2 MLX_ENABLE_TF32=1 MLX_SDPA_VJP_FLASH64_TILE=16` | Same shape restrictions, NAX hardware |
+
+NAX tile choices16/32/64 mean Q×K tiles16×32/32×32/32×64. Both prototypes
+support full causal and window attention. They use separate dQ/dKV ownership
+and recompute scores; NAX keeps score intermediates in registers. Mode1 requires
+TF32 off to match forward precision. Mode2 uses native NAX arithmetic.
+
+The window patch supports equal-length causal training with sequence length>8;
+array masks and sinks remain unsupported. Reference backend remains available
+in model config. Use the local environment for `mlx_fused_window` configs.
+
+## Verify and benchmark
+
+From the repo root, with the local environment active:
+
+```sh
+python experiments/mlx_swa/check_backward.py
+python experiments/mlx_swa/test_extended.py
+MLX_ENABLE_TF32=0 python experiments/mlx_swa/flash_backward.py --suite
+MLX_ENABLE_TF32=1 python experiments/mlx_swa/flash_backward.py --nax-grid
+python experiments/mlx_swa/flash_backward.py --confirm-performance
+```
+
+`--confirm-performance` compares fresh temporary models at batches2/8 using a
+repeated cached batch. It records strict multi-update comparison failures for
+diagnosis; initial gradient checks still raise. Native repeat controls also
+failed parameter equality. Attention-gradient comparisons passed; matching
+short loss trajectories do not establish long-run quality.
+
+Additional tools: `profile_training.py` for component timing, `audit_step.py`
+for precision-preserving optimizations, `sweep.py` for longer contexts, and
+`allocation_limit.py` for the dense score-buffer limit. Sweeps are explicit,
+optional experiments; the host-RSS watchdog is not a GPU-memory cap.
+
+Raw benchmark output belongs under `artifacts/benchmarks/`. Intermediate reports
+and results from this session remain locally in
+`.local/mlx-swa-reports-2026-11-16/` and are excluded from Git.
+
+## Resume exploration
+
+First reproduce a benefit in matched real training runs; prior microbenchmarks
+suggested gains that were not noticeable in the user's run. Then inspect GPU
+counters for register spills/occupancy and test cooperative tile reuse/pipelining.
+
+Kernel sources: `mlx/backend/metal/scaled_dot_product_attention.cpp` and
+`mlx/backend/metal/kernels/scaled_dot_product_attention_vjp.metal`. NAX helpers:
+`mlx/backend/metal/kernels/steel/attn/nax.h`.
+
+References: [FlashAttention](https://arxiv.org/abs/2205.14135),
+[MLX tiled backward](https://github.com/ml-explore/mlx/pull/4563),
+[Apple TensorOps](https://developer.apple.com/videos/play/tech-talks/111432/).

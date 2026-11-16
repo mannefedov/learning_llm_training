@@ -45,6 +45,26 @@ class FusedAttentionTests(unittest.TestCase):
             for actual, expected in zip(fused_grads, ref_grads):
                 self.assertTrue(mx.allclose(actual, expected, atol=3e-3, rtol=3e-3).item())
 
+    @unittest.skipUnless(
+        "window_size" in (mx.fast.scaled_dot_product_attention.__doc__ or ""),
+        "Requires local windowed MLX build")
+    def test_windowed_model_matches_reference(self):
+        options = dict(vocab_size=16, context_length=33, n_layers=2,
+                       d_model=128, n_heads=2, sliding_window=7,
+                       attention_types=["sliding_window", "full"])
+        reference = GPT(GPTConfig(**options))
+        fused = GPT(GPTConfig(**options, attention_backend="mlx_fused_window"))
+        fused.update(reference.parameters())
+        ids = mx.arange(33)[None, :] % 16
+        ref_loss, ref_grads = nn.value_and_grad(reference, lambda x: reference(x,x)[1])(ids)
+        fn = mx.compile(nn.value_and_grad(fused, lambda x: fused(x,x)[1]),
+                        inputs=fused.state, outputs=fused.state)
+        loss, grads = fn(ids)
+        self.assertAlmostEqual(loss.item(), ref_loss.item(), places=4)
+        for (_, actual), (_, expected) in zip(tree_flatten(grads), tree_flatten(ref_grads)):
+            self.assertTrue(mx.allclose(actual, expected, atol=0.001, rtol=0.01).item())
+        self.assertEqual(fused.generate(ids[:, :1], 2).shape, (1,3))
+
     def test_compiled_model_backward_and_generation(self):
         model = GPT(GPTConfig(vocab_size=16, context_length=16, n_layers=1,
                               d_model=128, n_heads=2, attention_backend="mlx_fused"))

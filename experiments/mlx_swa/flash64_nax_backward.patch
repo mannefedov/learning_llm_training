@@ -1,0 +1,145 @@
+--- a/mlx/backend/metal/scaled_dot_product_attention.cpp
++++ b/mlx/backend/metal/scaled_dot_product_attention.cpp
+@@ -2019,9 +2019,16 @@
+   compute_encoder.dispatch_threads(
+       MTL::Size(32, qL, B * H), MTL::Size(32, 1, 1));
+ 
+-  if (config::get("MLX_SDPA_VJP_FLASH64", 0) != 0) {
++  const int flash64 = config::get("MLX_SDPA_VJP_FLASH64", 0);
++  if (flash64 != 0) {
++    if (flash64 != 1 && flash64 != 2) {
++      throw std::runtime_error("[SDPA flash64 experiment] mode must be 0, 1, or 2");
++    }
++    if (flash64 == 2 && (!metal::is_nax_available() || !env::enable_tf32())) {
++      throw std::runtime_error("[SDPA flash64 experiment] mode 2 requires NAX and MLX_ENABLE_TF32=1");
++    }
+     // Recomputed scores must use the same precision as forward's saved LSE.
+-    if (env::enable_tf32()) {
++    if (flash64 == 1 && env::enable_tf32()) {
+       throw std::runtime_error(
+           "[SDPA flash64 experiment] requires MLX_ENABLE_TF32=0");
+     }
+@@ -2030,7 +2037,17 @@
+       throw std::runtime_error(
+           "[SDPA flash64 experiment] requires FP32, D64, equal heads/lengths, causal");
+     }
+-    for (const auto* name : {"sdpa_vjp_flash64_dq", "sdpa_vjp_flash64_dkv"}) {
++    const int tile = config::get("MLX_SDPA_VJP_FLASH64_TILE", 32);
++    if (flash64 == 2 && tile != 16 && tile != 32 && tile != 64) {
++      throw std::runtime_error("[SDPA flash64 experiment] NAX tile must be 16, 32, or 64");
++    }
++    const std::string prefix = flash64 == 2
++        ? "sdpa_vjp_flash64_nax_" + std::to_string(tile)
++        : "sdpa_vjp_flash64";
++    for (int pass = 0; pass < 2; ++pass) {
++      const int block = flash64 == 1 ? 8
++          : (pass == 0 ? (tile == 16 ? 16 : 32) : (tile == 64 ? 64 : 32));
++      const std::string name = prefix + (pass == 0 ? "_dq" : "_dkv");
+       compute_encoder.set_compute_pipeline_state(d.get_kernel(name));
+       compute_encoder.set_input_array(q, 0);
+       compute_encoder.set_input_array(k, 1);
+@@ -2045,7 +2062,7 @@
+       compute_encoder.set_bytes(scale_, 10);
+       compute_encoder.set_bytes(window_size_, 11);
+       compute_encoder.dispatch_threadgroups(
+-          MTL::Size((qL + 7) / 8, 1, B * H), MTL::Size(32, 1, 1));
++          MTL::Size((qL + block - 1) / block, 1, B * H), MTL::Size(32, 1, 1));
+     }
+     return;
+   }
+--- a/mlx/backend/metal/kernels/scaled_dot_product_attention_vjp.metal
++++ b/mlx/backend/metal/kernels/scaled_dot_product_attention_vjp.metal
+@@ -288,3 +288,93 @@
+ 
+ instantiate_kernel("sdpa_vjp_flash64_dq", sdpa_vjp_flash64, true);
+ instantiate_kernel("sdpa_vjp_flash64_dkv", sdpa_vjp_flash64, false);
++
++#include "mlx/backend/metal/kernels/steel/attn/nax.h"
++
++// Register-resident NAX tiles with separate query/key ownership.
++template <bool QueryGradient, short QRows, short KRows>
++[[kernel]] void sdpa_vjp_flash64_nax(
++    const device float* q [[buffer(0)]],
++    const device float* k [[buffer(1)]],
++    const device float* v [[buffer(2)]],
++    const device float* grad_o [[buffer(3)]],
++    const device float* lse [[buffer(4)]],
++    const device float* delta [[buffer(5)]],
++    device float* grad_q [[buffer(6)]],
++    device float* grad_k [[buffer(7)]],
++    device float* grad_v [[buffer(8)]],
++    constant int& length [[buffer(9)]],
++    constant float& scale [[buffer(10)]],
++    constant int& window [[buffer(11)]],
++    uint3 group [[threadgroup_position_in_grid]]) {
++  using namespace mlx::steel;
++  constexpr int OwnedRows = QueryGradient ? QRows : KRows;
++  constexpr int OtherRows = QueryGradient ? KRows : QRows;
++  const int owned = int(group.x) * OwnedRows;
++  const size_t base = size_t(group.z) * length * 64;
++  const size_t row_base = size_t(group.z) * length;
++  NAXTile<float, OwnedRows / 16, 4> acc, acc_v;
++  acc.clear();
++  acc_v.clear();
++  const int first = QueryGradient
++      ? (window > 0 ? max(0, owned - window + 1) / OtherRows * OtherRows : 0)
++      : owned;
++  const int end = QueryGradient ? min(length, owned + OwnedRows)
++      : (window > 0 ? min(length, owned + OwnedRows + window - 1) : length);
++  for (int other = first; other < end; other += OtherRows) {
++    const int qi = QueryGradient ? owned : other;
++    const int kj = QueryGradient ? other : owned;
++    NAXTile<float, QRows / 16, 4> qt, ot;
++    NAXTile<float, KRows / 16, 4> kt, vt;
++    qt.load_safe(q + base + size_t(qi) * 64, 64, short2(64, min(int(QRows), length - qi)));
++    kt.load_safe(k + base + size_t(kj) * 64, 64, short2(64, min(int(KRows), length - kj)));
++    vt.load_safe(v + base + size_t(kj) * 64, 64, short2(64, min(int(KRows), length - kj)));
++    ot.load_safe(grad_o + base + size_t(qi) * 64, 64, short2(64, min(int(QRows), length - qi)));
++    NAXTile<float, QRows / 16, KRows / 16> prob, ds;
++    prob.clear();
++    ds.clear();
++    tile_matmad_nax(prob, qt, metal::false_type{}, kt, metal::true_type{});
++    tile_matmad_nax(ds, ot, metal::false_type{}, vt, metal::true_type{});
++    STEEL_PRAGMA_UNROLL
++    for (short r = 0; r < QRows / 16; ++r) {
++      STEEL_PRAGMA_UNROLL
++      for (short c = 0; c < KRows / 16; ++c) {
++        STEEL_PRAGMA_UNROLL
++        for (short e = 0; e < 8; ++e) {
++          const short2 coord = BaseNAXFrag::get_coord(e);
++          const int row = qi + r * 16 + coord.y;
++          const int col = kj + c * 16 + coord.x;
++          const bool allowed = row < length && col < length && col <= row &&
++              (window <= 0 || row - col < window);
++          float p = 0.f, g = 0.f;
++          if (allowed) {
++            p = metal::fast::exp(prob.frag_at(r,c)[e] * scale - lse[row_base + row]);
++            g = p * (ds.frag_at(r,c)[e] - delta[row_base + row]) * scale;
++          }
++          prob.frag_at(r,c)[e] = p;
++          ds.frag_at(r,c)[e] = g;
++        }
++      }
++    }
++    if constexpr (QueryGradient) {
++      tile_matmad_nax(acc, ds, metal::false_type{}, kt, metal::false_type{});
++    } else {
++      tile_matmad_nax(acc, ds, metal::true_type{}, qt, metal::false_type{});
++      tile_matmad_nax(acc_v, prob, metal::true_type{}, ot, metal::false_type{});
++    }
++  }
++  const short2 bounds(64, min(OwnedRows, length - owned));
++  if constexpr (QueryGradient) {
++    acc.store_safe(grad_q + base + size_t(owned) * 64, 64, bounds);
++  } else {
++    acc.store_safe(grad_k + base + size_t(owned) * 64, 64, bounds);
++    acc_v.store_safe(grad_v + base + size_t(owned) * 64, 64, bounds);
++  }
++}
++
++instantiate_kernel("sdpa_vjp_flash64_nax_16_dq", sdpa_vjp_flash64_nax, true, 16, 32);
++instantiate_kernel("sdpa_vjp_flash64_nax_16_dkv", sdpa_vjp_flash64_nax, false, 16, 32);
++instantiate_kernel("sdpa_vjp_flash64_nax_32_dq", sdpa_vjp_flash64_nax, true, 32, 32);
++instantiate_kernel("sdpa_vjp_flash64_nax_32_dkv", sdpa_vjp_flash64_nax, false, 32, 32);
++instantiate_kernel("sdpa_vjp_flash64_nax_64_dq", sdpa_vjp_flash64_nax, true, 32, 64);
++instantiate_kernel("sdpa_vjp_flash64_nax_64_dkv", sdpa_vjp_flash64_nax, false, 32, 64);

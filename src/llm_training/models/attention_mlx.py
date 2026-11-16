@@ -26,7 +26,7 @@ class CausalSelfAttention(nn.Module):
         self.proj = nn.Linear(config.d_model, config.d_model)
 
     def attend(self, q, k, v):
-        if self.backend == "mlx_fused":
+        if self.backend in ("mlx_fused", "mlx_fused_window"):
             # The string mask enables fused causal backward; an array mask does not.
             return mx.fast.scaled_dot_product_attention(
                 q, k, v, scale=1 / math.sqrt(q.shape[-1]),
@@ -52,8 +52,17 @@ class SlidingWindowAttention(CausalSelfAttention):
         if config.sliding_window is None:
             raise ValueError("sliding_window is required")
         self.window_size = config.sliding_window
+        if self.backend == "mlx_fused_window" and "window_size" not in (
+            mx.fast.scaled_dot_product_attention.__doc__ or ""
+        ):
+            raise ValueError("mlx_fused_window requires the local patched MLX environment; "
+                             "use .local/venv-mlx-swa/bin/python")
 
     def attend(self, q, k, v):
+        if self.backend == "mlx_fused_window":
+            return mx.fast.scaled_dot_product_attention(
+                q, k, v, scale=1 / math.sqrt(q.shape[-1]), mask="causal",
+                window_size=self.window_size, force_fused=True)
         length = q.shape[2]
         tiles = []
         for start in range(0, length, self.window_size):

@@ -129,3 +129,30 @@ For loss plots, install `.[analysis]` and open
 
 For a fused full-attention experiment, use the
 [model instructions](../models/README.md#fused-full-attention-mlx).
+
+## Experimental fused SWA at 4K
+
+Use the [locally patched MLX build](../../../experiments/mlx_swa/README.md):
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  .local/venv-mlx-swa/bin/python -m llm_training.pretraining_mlx \
+  --config configs/pretraining/sequential_gpt_mlx_swa_fused_4k.toml
+```
+
+Reuses the existing token cache and starts a new run under
+`artifacts/pretraining/gpt-mlx-swa-fused-4k-512m-01`. The config selects the
+experimental `mlx_fused_window` backend for local layers and fused causal
+attention for full layers. It uses native softmax; corrected softmax is incompatible.
+The standard `.venv` does not contain this kernel patch.
+
+Inspect progress timing, validation loss, and the generated samples. Longer
+prompt continuations are more useful for assessing the added context than the
+short prompts alone. This run changes context and model size; to compare kernel
+speed alone, keep the config settings and change only `attention_backend` to
+`reference` in a separate config/run.
+
+Progress shows `tok/s`: average training tokens per second since this start/resume,
+including validation, sampling, checkpointing, and compilation time where applicable.
+`metrics.csv` records `tokens_per_second`, `tokens_processed`, and `elapsed_seconds`
+at each loss evaluation. Each batch counts `batch_size × context_length` tokens.

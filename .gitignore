@@ -224,3 +224,6 @@ __marimo__/
 
 # Local upstream development checkouts
 /.local/
+
+# Generated attention benchmark output
+/experiments/mlx_swa/results/

@@ -90,7 +90,7 @@ def evaluate(model: GPT, tokens, config: TrainConfig) -> float:
 
 
 def train(model: GPT, train_tokens, val_tokens, config: TrainConfig,
-          record_metrics: Callable[[int, float | None, float], None] | None = None,
+          record_metrics: Callable[..., None] | None = None,
           record_samples: Callable[[int], None] | None = None, *,
           optimizer=None, start_step: int = 0, batch_rng_state=None,
           record_checkpoint=None):
@@ -107,11 +107,12 @@ def train(model: GPT, train_tokens, val_tokens, config: TrainConfig,
         generator.setstate(batch_rng_state)
     count = sum(p.size for _, p in tree_flatten(model.parameters()))
     print(f"Device: {mx.default_device()}; parameters: {count:,}")
-    with TrainingProgress(config.steps, start_step=start_step, steps_per_epoch=epoch_steps) as progress:
+    with TrainingProgress(config.steps, start_step=start_step, steps_per_epoch=epoch_steps,
+                          tokens_per_step=config.batch_size * model.config.context_length) as progress:
         val_loss = evaluate(model, val_tokens, config)
         progress.update(start_step, val_loss=val_loss)
         if record_metrics is not None:
-            record_metrics(start_step, None, val_loss)
+            record_metrics(start_step, None, val_loss, progress.metrics())
         if record_samples is not None:
             record_samples(start_step)
         for step in range(start_step + 1, config.steps + 1):
@@ -132,7 +133,7 @@ def train(model: GPT, train_tokens, val_tokens, config: TrainConfig,
                 val_loss = evaluate(model, val_tokens, config)
                 progress.update(step, train_loss=loss.item(), val_loss=val_loss)
                 if record_metrics is not None:
-                    record_metrics(step, loss.item(), val_loss)
+                    record_metrics(step, loss.item(), val_loss, progress.metrics())
             if record_samples is not None:
                 record_samples(step)
             progress.update(step)
