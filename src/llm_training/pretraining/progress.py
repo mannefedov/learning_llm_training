@@ -28,6 +28,7 @@ class TrainingProgress:
         self.start_step = start_step
         self.train_loss = None
         self.val_loss = None
+        self.learning_rate = None
         self.stream = sys.stdout
         self.interactive = self.stream.isatty()
         self.started = time.monotonic()
@@ -38,12 +39,14 @@ class TrainingProgress:
         self._display()
         return self
 
-    def update(self, step: int, train_loss=None, val_loss=None):
+    def update(self, step: int, train_loss=None, val_loss=None, learning_rate=None):
         self.step = step
         if train_loss is not None:
             self.train_loss = train_loss
         if val_loss is not None:
             self.val_loss = val_loss
+        if learning_rate is not None:
+            self.learning_rate = learning_rate
         interval = 1.0 if self.interactive else 30.0
         if time.monotonic() - self.last_display >= interval:
             self._display()
@@ -67,6 +70,8 @@ class TrainingProgress:
             losses += f" train={self.train_loss:.4f}"
         if self.val_loss is not None:
             losses += f" val={self.val_loss:.4f}"
+        if self.learning_rate is not None:
+            losses += f" lr={self.learning_rate:.2e}"
         epochs = (f" epochs={self.step / self.steps_per_epoch:.2f}/{self.total / self.steps_per_epoch:.2f}"
                   if self.steps_per_epoch else "")
         rate = ""

@@ -26,19 +26,21 @@ def train_from_config(config_path: Path, resume: Path | None = None) -> Path:
     from .train import TrainConfig, choose_device, train, make_optimizer
     from .tracking import environment_metadata, log_run
     from .sampling import GenerationConfig, log_samples
+    from .statistics import StatisticsConfig, log_statistics
     from .checkpoint import CheckpointConfig, CheckpointWriter, restore_checkpoint
 
     config_text = config_path.read_text(encoding="utf-8")
     config = tomllib.loads(config_text)
     required = {"data", "tokenizer", "model", "training", "output"}
-    if not required <= set(config) or set(config) - required - {"generation", "cache", "checkpoint"}:
-        raise ValueError("Config requires data, tokenizer, model, training, output; generation, cache, checkpoint are optional")
+    if not required <= set(config) or set(config) - required - {"generation", "cache", "checkpoint", "statistics"}:
+        raise ValueError("Config requires data, tokenizer, model, training, output; generation, cache, checkpoint, statistics are optional")
     output_dir = Path(config["output"]["directory"])
     tokenizer = Tokenizer.from_file(config["tokenizer"]["path"])
     model_config = GPTConfig(vocab_size=tokenizer.get_vocab_size(), **config["model"])
     train_config = TrainConfig(**config["training"])
     checkpoint_config = CheckpointConfig(**config.get("checkpoint", {}))
     generation_config = GenerationConfig(**config.get("generation", {}))
+    statistics_config = StatisticsConfig(**config.get("statistics", {}))
     eos_token = config["tokenizer"]["eos_token"]
     eos_id = tokenizer.token_to_id(eos_token)
     if eos_id is None:
@@ -70,7 +72,7 @@ def train_from_config(config_path: Path, resume: Path | None = None) -> Path:
     if cached_tokens is not None:
         train_tokens, val_tokens = cached_tokens
         if train_config.sampling == "sequential":
-            epoch_steps = batches_per_epoch(train_tokens, train_config.batch_size, model_config.context_length)
+            epoch_steps = batches_per_epoch(train_tokens, train_config.effective_batch_size, model_config.context_length)
             print(f"Sequential training: {epoch_steps:,} steps per epoch; "
                   f"target {train_config.steps / epoch_steps:.2f} epochs ({train_config.steps:,} steps)")
     mx.set_default_device(choose_device(train_config.device))
@@ -95,8 +97,11 @@ def train_from_config(config_path: Path, resume: Path | None = None) -> Path:
         "run_name": output_dir.name,
         "model_config": asdict(model_config),
         "training_config": asdict(train_config),
+        "effective_batch_size": train_config.effective_batch_size,
+        "tokens_per_update": train_config.effective_batch_size * model_config.context_length,
         "generation_config": asdict(generation_config),
         "checkpoint_config": asdict(checkpoint_config),
+        "statistics_config": asdict(statistics_config),
         "start_step": start_step,
         "resumed_from": str(resume.resolve()) if resume is not None else None,
         "data_config": config["data"],
@@ -126,12 +131,14 @@ def train_from_config(config_path: Path, resume: Path | None = None) -> Path:
                 raise ValueError(f"{name} data needs at least context_length + 1 tokens")
         print(f"Tokens: train={train_tokens.size:,}; validation={val_tokens.size:,}")
         with log_samples(output_dir, model, tokenizer, eos_id,
-                         generation_config, train_config.steps) as record_samples:
+                         generation_config, train_config.steps) as record_samples, log_statistics(
+                             output_dir, model, train_tokens, val_tokens,
+                             train_config, statistics_config) as statistics:
             writer = CheckpointWriter(output_dir, model, config, train_config,
                                       checkpoint_config, cache_signature)
             train(model, train_tokens, val_tokens, train_config, record_metrics, record_samples,
                   optimizer=optimizer, start_step=start_step, batch_rng_state=batch_rng_state,
-                  record_checkpoint=writer)
+                  record_checkpoint=writer, statistics=statistics)
         print(f"Saved checkpoint to {checkpoint_path}")
     return checkpoint_path
 

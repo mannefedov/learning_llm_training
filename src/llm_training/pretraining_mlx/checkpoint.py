@@ -43,7 +43,9 @@ def restore_checkpoint(path, model, optimizer, config, train_config, tokenizer_p
     if asdict(GPTConfig(**saved["model_config"])) != asdict(model.config):
         raise ValueError("Resume model configuration differs from the checkpoint")
     old_training = saved["training_config"]
-    for key in ("batch_size", "learning_rate", "weight_decay", "grad_clip", "seed", "sampling"):
+    if old_training.get("gradient_accumulation_steps", 1) != train_config.gradient_accumulation_steps:
+        raise ValueError("Resume training setting differs: gradient_accumulation_steps")
+    for key in ("batch_size", "weight_decay", "grad_clip", "seed", "sampling"):
         if old_training[key] != getattr(train_config, key):
             raise ValueError(f"Resume training setting differs: {key}")
     if saved["config"]["data"] != config["data"] or saved["token_cache"] != cache:
@@ -58,6 +60,9 @@ def restore_checkpoint(path, model, optimizer, config, train_config, tokenizer_p
     optimizer.state = tree_unflatten(mx.load(str(path.parent / saved["optimizer"])))
     if optimizer.state["step"].item() != step:
         raise ValueError("Checkpoint optimizer step does not match its manifest")
+    # Loading optimizer state also restores its old LR. Keep moments and step,
+    # but use the requested rate for continuation experiments.
+    optimizer.learning_rate = train_config.learning_rate
     mx.eval(model.parameters(), optimizer.state)
     return step, _tuples(saved["batch_rng_state"])
 

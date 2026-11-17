@@ -817,3 +817,438 @@ Update this log before pushing work.
   MLX API in the stock environment). Experiment scripts and notebook code cells
   parsed/compiled; git diff --check passed. GPU tests were not rerun while the
   user's training is active; results above were obtained before that run.
+
+## 2026-11-16 — Optimization review of saved training runs
+
+- Read MLX/Torch optimizer loops and saved configs, metadata, checkpoints, and
+  loss CSVs; no training or evaluation executed and no training behavior changed.
+- Small 1.85M SWA model: validation ~9.009 at initialization, ~4.712 at 200k,
+  ~4.691 at 400k. Larger 6.26M/4K run: ~9.031 to ~3.848 over 62.5k steps.
+  Both one-pass budgets process 512M tokens; different model/context/eval windows
+  mean their losses do not isolate the effect of model capacity.
+- Current optimizer: matrix-only AdamW, betas (0.9,0.95), clip1, constant3e-4.
+  Recommended next controlled experiment: linear warmup then cosine decay to
+  10% of peak; first keep peak3e-4, other settings, and token budget fixed.
+  Warmup is for fresh training, not a remedy for an existing late plateau.
+  Scheduler implementation and user-run comparison remain future work.
+- Run full-fused-01 config copy says3e-3, but metadata and checkpoint both say
+  3e-4; do not treat it as evidence of an actual higher-LR experiment.
+- Reference checked: https://github.com/karpathy/build-nanogpt/blob/master/train_gpt2.py
+  uses linear warmup and cosine decay with a 10%-of-peak floor.
+
+## 2026-11-16 — Lower-LR checkpoint continuation
+
+- User requested a runnable lower-LR continuation. Selected completed 6.26M/4K
+  SWA run gpt-mlx-swa-fused-4k-512m-01: checkpoint step62,500, validation~3.848.
+  Added sequential_gpt_mlx_swa_fused_4k_low_lr.toml from its saved config:
+  batch2 unchanged, constant LR3e-5, total68,750 steps (6,250 extra updates,
+  51.2M targets). Fresh output base gpt-mlx-swa-fused-4k-low-lr-01.
+- Resume now allows learning_rate changes and applies configured LR after loading
+  optimizer state, retaining Adam moments/step and other compatibility checks.
+  Updated MLX instructions. No scheduler or warmup added.
+- Verified:13 MLX pretraining CPU tests passed, including exact restored weights,
+  moments/step preservation and a lower-LR resumed update/checkpoint. Config model,
+  tokenizer/data/cache identity, manifest and immutable training settings checked
+  against source checkpoint; model/optimizer files exist. Whitespace check passed.
+- Full continuation and GPU quality evaluation left to user. Command requires
+  existing patched .local/venv-mlx-swa and --resume of the selected source run;
+  compare held-out loss/sample quality to source. No active training modified.
+- One isolated test invocation aborted during MLX import with duplicate nanobind
+  DeviceType registration; immediate full-suite rerun passed all13 tests (1.38s).
+
+## 2026-11-16 — Extend successful lower-LR continuation
+
+- Inspected completed user-run gpt-mlx-swa-fused-4k-low-lr-01: steps62,500–68,750,
+  val loss3.84849→3.67891; best at final step. Mean val over63,750–65,000 was
+  3.71725 versus3.68684 over67,500–68,750, supporting further continuation.
+  Observed runtime359.8s for6,250 updates. No new agent training performed.
+- Added sequential_gpt_mlx_swa_fused_4k_low_lr_long.toml: total125,000 steps,
+  constant3e-5 and batch2 unchanged, output gpt-mlx-swa-fused-4k-low-lr-long-01.
+  Resume from low-lr-01 step68,750 adds56,250 updates/460.8M targets, reaching
+  two total passes/1.024B targets; estimated54min at observed run speed.
+- Verified source checkpoint model/optimizer files exist and config model/data/
+  tokenizer/cache and all training fields except total steps match checkpoint.
+  Whitespace check passed. User to run continuation and inspect validation trend
+  and samples; plateau time remains unmeasured. No kernel/trainer changes.
+
+## 2026-11-16 — MLX linear warmup and cosine LR decay
+
+- Added opt-in lr_schedule="cosine", warmup_steps, min_learning_rate and optional
+  lr_decay_steps to MLX TrainConfig. Constant remains default for existing runs.
+  One-based update1 uses peak/warmup_steps; warmup ends at peak; cosine reaches
+  floor on absolute lr_decay_steps (default training.steps), then stays there.
+  No warmup starts at peak on update1. Invalid schedule/boundary settings reject.
+- Trainer sets LR before each optimizer update. Absolute step determines LR on
+  resume, retaining moments/count and avoiding warmup restart. Explicit decay
+  horizon preserves curve when total budget is extended; schedule edits deliberately
+  replan curve. Existing checkpoint LR override support retained.
+- Added learning_rate CSV column (blank for initial/no-update row and Torch runs)
+  and lr in MLX progress output. Updated stage README with settings/resume semantics.
+  Reference: https://github.com/karpathy/build-nanogpt/blob/master/train_gpt2.py;
+  local implementation uses explicit one-based peak/floor endpoints.
+- New sequential_gpt_mlx_swa_fused_4k_cosine.toml is a fresh run using same4K model/
+  batch2/cache, 125k total updates, 1250warmup, peak3e-4/floor3e-5. Output base
+  gpt-mlx-swa-fused-4k-cosine-01. Existing active lower-LR continuation/configs
+  untouched; no new training launched.
+- Verification:27 focused CPU tests passed across MLX/Torch pretraining, checkpoint,
+  and progress. New checks cover boundaries, validation, used/logged LR, serialized
+  optimizer resume vs uninterrupted updates; existing compiled checkpoint test now
+  also covers cosine and exact state equivalence. All MLX configs parsed/validated;
+  sample schedule values2.4e-7(update1),3e-4(1250),1.65e-4(63125),3e-5(125000+).
+  Standalone MLX config-validation import failed due sandbox Metal access; same
+  lightweight command succeeded with escalation. Whitespace check passed.
+- User to run fresh scheduled experiment and inspect validation/sample quality.
+  No long GPU run or convergence result claimed.
+
+## 2026-11-16 — Refresh training loss between evaluations
+
+- User noticed train display changed only on eval. MLX and Torch loops now pass
+  the latest batch loss to progress on every update; MLX also refreshes current LR.
+  Cache scalar loss once after optimizer update and reuse for logging/display.
+  Existing terminal throttle (1s interactive/30s redirected), validation and CSV
+  cadence unchanged. Added concise MLX README explanation.
+- Verification:25 focused pretraining/progress tests passed; git diff --check
+  passed. No long training executed; running processes retain already loaded code.
+
+## 2026-11-16 — Compare published LR ranges and schedules
+
+- User asked whether3e-4→3e-5 is too narrow and how modern recipes compare.
+  Verified primary sources: nanoGPT uses6e-4→6e-5 cosine after2000warmup;
+  Llama3 405B uses8e-5→8e-7 cosine after8000warmup, then final linear annealing
+  to0; DeepSeekV3 warms to2.2e-4 over2k updates, holds until10T tokens, cosine
+  to2.2e-5 over4.3T, then final rates2.2e-5/7.3e-6; SmolLM3 uses2e-4 WSD,
+  2000warmup and linear-to-zero decay over final10% updates.
+- Ratio10x is a defensible baseline, not a tuned optimum for this project.
+  Separate absolute peak, floor ratio, shape/horizon. Adam LR is not a fixed
+  fraction of parameter values. Local cosine config's warmup starts2.4e-7.
+  Suggested isolated comparisons: peak6e-4 with10%floor, or unchanged peak3e-4
+  with1%floor3e-6; keep data/model/batch/budget fixed. No experiments run/changed.
+- MiniCPM reports nominalLR0.01 with muP and parameter-dependent scaling;
+  raw LR numbers across parameterizations cannot be copied directly.
+- Sources: https://github.com/karpathy/nanoGPT/blob/master/train.py ;
+  https://arxiv.org/html/2407.21783v3#S3.SS4 ;
+  https://arxiv.org/html/2412.19437v2#S4.SS2 ;
+  https://huggingface.co/blog/smollm3 ; https://arxiv.org/html/2404.06395v2
+
+## 2026-11-17 — Explore training diagnostics before optimizer changes
+
+- User wants established monitoring/gradient visualization/replay approaches
+  before changing accumulation or optimization. Reviewed MLX loop: clip_grad_norm
+  already returns global norm, currently discarded; logging has losses/LR/throughput.
+  No trainer changes, app implementation, or computations performed.
+- Discussed diagnostic priorities: preclip norm/clipping frequency; per-tensor
+  gradient RMS and actual Adam update RMS/weight RMS; fixed train/held-out probe
+  losses and token-level errors; optional activation statistics on fixed inputs;
+  at fixed weights, multiple-batch gradient disagreement/noise estimates to assess
+  accumulation. These suggest hypotheses, not definitive capacity diagnoses.
+- Proposed modest replay UI: step slider over layer×time heatmaps, tensor details,
+  fixed-example predictions, sampled metrics and sparse checkpoints. Individual
+  weight movies/2D loss landscapes are secondary; projections cannot prove trapping.
+  MLX lazy arrays require materializing preupdate snapshots if measuring true deltas;
+  activation probes should be separate from compiled production forward/backward.
+- Established references checked: TensorBoard scalar/histogram/embedding logging
+  https://docs.pytorch.org/docs/stable/tensorboard ; TorchExplorer PyTorch module
+  activations/parameters/gradient UI https://github.com/spfrommer/torchexplorer ;
+  W&B watch source docs https://github.com/wandb/gitbook/blob/master/library/integrations/pytorch.md
+  (live docs URL failed fetch); gradient noise scale https://arxiv.org/abs/1812.06162 ;
+  normalized loss-landscape visualization https://arxiv.org/abs/1712.09913 ;
+  Karpathy educational activations/gradient material https://github.com/karpathy/nn-zero-to-hero .
+- No installation or external uploads. Further instrumentation awaits scope choice;
+  existing training remains untouched. No claim about cause of latest plateau.
+
+## 2026-11-17 — Optional MLX training-statistics collection and basic-model config
+
+- User authorized statistics instrumentation before visualization/accumulation,
+  returning to an earlier short-context model and parking attention optimizations.
+  Added opt-in [statistics] every/probe_batches (default disabled), recorded in
+  metadata. statistics.jsonl flushed per report, schema_version1, at initial/resume,
+  update1, configured intervals, final update. No full tensors written to disk.
+- Lightweight interval counters summarize every update's preclip global norm:
+  mean,max,count,fraction above clip threshold. Reuse norm returned by existing
+  clipping. Sampled reports capture materialized preupdate parameter snapshots
+  and raw gradient RMS, then actual post-AdamW update RMS/weight RMS by tensor,
+  with shape/element counts for later layer aggregation. Nearzero-weight ratios
+  are null; absolute RMS remains. Initial row has no gradients/updates.
+- Each report evaluates deterministic fixed train-corpus/validation windows using
+  independent host RNGs and mode restoration. Probes are separate from ordinary
+  val CSV. Records include snapshot/reduction/probe time, excluding deferred
+  backward/compilation, file I/O and per-update norm/synchronization overhead.
+  Extra backward work is not performed; raw gradients come from current train batch.
+- Added sequential_gpt_mlx_diagnostics.toml: reference full attention, corrected
+  math, T256,d128,L4,H4,batch10, compiled forward/backward, existing512M cache,
+  200k total steps,2000warmup, cosine3e-4→3e-5. Eval250, stats1000×2probe batches,
+  generation1000 with longer prompts; output gpt-mlx-basic-diagnostics-01.
+  Cache/data manifest matches and budget512M targets/202statistics rows checked.
+  No fitting/convergence outcome claimed. Existing4K configs untouched.
+- Updated MLX stage README with command, fields/cadence/interpretation, and
+  exploration backlog to prioritize basic fitting before4K/kernel work.
+- Verification:30 focused CPU tests passed (2.30s), covering scalar math vs known
+  gradients/weight deltas, interval reset/clipping fraction, deterministic probes,
+  disabled mode/validation, JSONL CLI wiring/resume and flush, and exact identical
+  weights/losses with stats on/off for eager and compiled tiny runs. Existing
+  checkpoint, Torch, progress tests passed; git diff --check passed.
+- No substantial training/download/GPU benchmarking launched. User to run new
+  config and inspect fixed losses, clipping, layer gradients/updates, and report
+  timing. Activation/noise-scale/token-error collectors and viewer remain unimplemented.
+
+## 2026-11-17 — Prepare matched double-LR diagnostics experiment
+
+- Created sequential_gpt_mlx_diagnostics_lr2x.toml from current diagnostics config:
+  peak6e-4/floor6e-5, fresh output base gpt-mlx-basic-diagnostics-lr2x-01.
+  Model/data/seed/batch/budget/warmup/schedule/reporting all unchanged.
+- Parsed both TOMLs and asserted only LR endpoints and output directory differ;
+  git diff --check passed. No training launched. User to run fresh (no --resume),
+  then compare fixed probe losses, clipping and per-tensor relative updates at
+  matched steps/tokens against baseline.
+
+## 2026-11-17 — Analyze baseline and double-LR diagnostics runs
+
+- User requested statistics analysis and notebook graphs. Read both completed
+  gpt-mlx-basic-diagnostics(-lr2x)-01 runs:202statistics rows,802loss rows each,
+  200k updates/512M tokens,1.85M parameters. Verified matching model, data/cache,
+  tokenizer, seeds, budget, sampling, reporting, initial probe losses and tensor
+  RMS; only training-config differences are2x peak/floorLR.
+- Baseline/double final main val4.490215/4.497227; best4.441736/4.439418 both at
+ 185500; last10k means4.473583/4.484118. DoubleLR wins early(10k5.46765vs5.57755)
+  then trails through middle(100k4.76470vs4.67098), finishes similar. No robust
+  final advantage established. Probe val slightly favors double at endpoint but
+  fixed train probe favors baseline; smaller probes use different windows.
+- Weighted clipping fractions99.4165%/99.3600%; last50k mean preclip norms9.499/
+ 7.976. Raw gradients grow; blocks all have nonzero sampled gradient/update RMS.
+  Final block update RMS~7.2e-6/~1.4e-5. No observed block-wide gradient disappearance;
+  activation gradients/directions and gradient noise not collected.
+- First attention-projection bias(128elements) contributes late sampled mean
+ 26.6%/26.0% of squared gradient norm; token embedding29.5%/38.0%. Final LayerNorm
+  scale RMS1→14.34/15.91; token embedding final RMS0.0557/0.0994. Measured scale
+  drift suggests activation/logit probes, not a confirmed failure mechanism.
+- Suggested next controlled experiment: baseline LR schedule with grad_clip5
+  instead of1; frequent clipping alone does not prove harm, especially under Adam.
+  No inference that accumulation helps without noise/direction probes. No clear
+  positive train/val probe gap, but no capacity diagnosis from that observation.
+- Added notebooks/06_training_statistics.ipynb with matched-run assertions,
+  tables,6embedded figures(loss/deltas/probes,norm/clipping,layer heatmaps,
+  gradient-energy shares,scale drift), observations/inferences and proposed next
+  test. Uses numpy,matplotlib,stdlib only; reads logs without model loading.
+  Aggregated RMS uses element-weighted squared values; gradient shares use squared
+  norm contributions. Updated notebook index and MLX README link.
+- Installed already-declared analysis dependency matplotlib3.11.2 in .venv from
+  cached wheels. Executed all8notebook code cells with stdout/PNG output capture;
+  checked notebook JSON/syntax/execution outputs and visually inspected all6plots.
+  Standalone PNGs under ignored artifacts/analysis/training-statistics/; notebook
+  embeds graphs (~1.79MB). git diff --check passed. No training/evaluation run.
+- Statistics JSONL~2.38MB/run; summed timed collector sections8.41/8.32sec versus
+  total79.98/78.87min (~0.18%). This excludes sync/norm-transfer/I/O and does not
+  measure incremental overhead; no stats-off speed comparison made.
+
+## 2026-11-17 — Clip5 matched experiment and extended training probes
+
+- User authorized grad_clip experiment config/command plus gradient-noise,
+  activation and logit logging before next user-run training. Created
+  sequential_gpt_mlx_diagnostics_clip5.toml with baseline3e-4→3e-5 schedule,
+  T256,L4,d128,batch10,200k updates unchanged; only training-setting change clip1→5.
+  Output base gpt-mlx-basic-diagnostics-clip5-01; new diagnostic flags enabled.
+- Optional fixed-weight gradient-noise probes:K4 raw batch gradients every5000
+  (also step0,1,final), independent host seed+4, same windows across reports.
+  Logs mean-gradient norm, average batch norm, unbiased batch variance trace,
+  squared-signal estimate ||gbar||²−S/K, noise/signal ratio, token-scaled noise
+  estimate, mean pairwise cosine among nonzero gradients and probe timing.
+  Nonpositive signal yields null ratios; no forced positive estimate. No clipping,
+  Adam transform or optimizer updates. K4 is descriptive and tokens are correlated;
+  not an exact optimal accumulation factor. 42reports/168extra backward passes.
+  Reference read: https://arxiv.org/html/1812.06162v1 (simple noise-scale estimator).
+- Added optional eager activation observer to GPT/Block, preserving identical
+  unobserved forward arithmetic. On first fixed train-probe batch, log mean/std/
+  RMS/absmax of embedding, normalized branch inputs, branch outputs, residuals,
+  final norm. Logits get distribution/vocabulary std, entropy, max/target
+  probabilities and top1 accuracy. Scalars only, no persistent tensors.
+  Probes preserve model train/eval mode and training batch RNG.
+- Extra options default off for older configs. Statistics schema2 retains existing
+  fields, adds optional probes.activations/probes.logits/gradient_noise. Updated
+  notebook06 loader to accept schemas1/2 without changing saved old-run plots.
+  README documents command/cadence/fields/formula/finite-sample limits and overhead.
+- Verification:39 focused tests passed (2.49s), including known-vector noise math,
+  identical/opposed/zero gradients, uniform-logit entropy/probabilities, observer
+  forward equality, mode restoration on failed probe, exact eager/compiled
+  training weights/losses with all probes on/off, and CLI logging/resume with
+  new flags. Existing checkpoint, Torch, progress, attention, numerical checks
+  passed. Config comparison/cache identity/budget, Python/notebook syntax and
+  git diff --check passed. No long training or GPU speed/quality claim.
+- User to launch fresh clip5 run and compare existing stats against baseline;
+  new fields have no historical counterparts. No accumulation implemented yet.
+
+## 2026-11-17 — Analyze completed clip5 run and new probes
+
+- User requested results check. Verified gpt-mlx-basic-diagnostics-clip5-01 completed
+  200k updates with202stats/802loss rows; model/data/cache/tokenizer, measured
+  initial tensors/probe losses match baseline; only training-config change clip1→5.
+- Baseline/clip5 final val4.490215/4.495202; best4.441736/4.451872 at185500; last10k
+  means4.473583/4.481474. Clip5 overall clipfraction61.438% vs99.4165%, but last50k
+  clip5 also100%. No held-out improvement from loosening clipping; modestly worse
+  main validation throughout most trajectory. Final small probe val favorsclip5
+  by0.0047 but train probe slightly worse; no robust advantage established.
+-42noise reports with four fixed2560token batches, all squared-signal estimates
+  positive. Last50k median raw noise/signal5.59994, meanpairwisecos median0.15066;
+  final ratio7.77506/cos0.11338/token-noisescale19904. Small-sample raw gradients,
+  correlated tokens, one seed and reused probes do not establish exact optimal
+  Adam/accumulation batch size. Supports testing accumulation4 (10240tokens/update),
+  reverting baselineclip1 and token-matching budget512M/50k updates+LR schedule;
+  no implementation or new training undertaken.
+- First attention activation branch increasingly cancels embedding input: final
+  input/output RMS0.05476/0.05356,sum0.01855; flattened cosine inferred exactly from
+  RMS identity−0.94158 vs~0 atinitialization. Not proof of bug/information loss;
+  possible normalization-scale sensitivity worth exploring later.
+- Global logit std16.519 vs mean within-position vocabstd1.403; entropy4.820nats,
+  mean maxprob0.2492,top1accuracy0.2648 on fixed training probe. Raw scale alone
+  does not establish probability saturation. No calibration or held-out accuracy
+  measured. Final block update RMS~7.0–7.2e-6; blocks remain active.
+- Extended notebook06 with clip5 comparison/noise/activation/logit sections and
+  four additional figures; prior analysis retained. Executed all12code cells,
+  embedded10figures (~2.53MB), checked JSON/syntax/output integrity, visually
+  inspected four newfigures, updated notebook index. StandalonePNG artifacts
+  refreshed under artifacts/analysis/training-statistics. Whitespace check passed.
+  Only log analysis; no model load/training/evaluation executed.
+- Clip5 runtime80.53min; timed stats16.50s including noise4.89s; JSONL3.22MB.
+  Does not isolate incremental overhead (norm transfer/sync/I/O excluded).
+
+## 2026-11-17 — Implement MLX accumulation and prepare matched factor4 run
+
+- User authorized gradient accumulation config/command; implemented optional
+  training.gradient_accumulation_steps (positive integer, default1). Effective
+  batch packed once and split into equal microbatches, averaging losses/gradients
+  at fixed weights, materializing running sums to bound lazy graphs, clipping
+  once, then one AdamW update. Steps/schedule/reporting count optimizer updates.
+- Sequential epoch boundaries/tails, preparation budgets, throughput/token counts,
+  and metadata now use effective batch B*A. Validation and fixed forward probes
+  retain microbatch B to preserve existing windows. Gradient-noise probes average
+  microbatch gradients for each effective-batch sample and report B*A*T tokens.
+  Metadata adds effective_batch_size and tokens_per_update.
+- Resume requires same accumulation factor, defaults missing old checkpoint field
+  to1, and restores only completed optimizer updates, so no partial sums saved.
+- Added sequential_gpt_mlx_diagnostics_accum4.toml: T256,L4,d128,H4 unchanged;
+  microbatch10,A4→40sequences/10240tokens per update;50k updates/512M targets;
+  warmup500,decay50000,LR3e-4→3e-5,clip1. Stats/checkpoint/generation250updates,
+  noise1250,eval125 (every other baseline eval by tokens). Extended probes enabled.
+  Adam betas/weight decay retained per update; fewer total updates intentionally.
+  Output gpt-mlx-basic-diagnostics-accum4-01. Existing token cache identity and
+  token budget match; no preparation/download needed. Fresh run, no --resume.
+- Updated MLX README with command, effective-batch semantics, token-matched
+  schedule/reporting, probe behavior, cache/epoch/resume handling. No accumulation
+  changes to independent Torch trainer; no optimizer/LR scaling beyond config.
+- Verification:44 focused tests passed(3.46s): accumulated gradients vs actual
+  large-batch reference(eager/compiled), clip-once-after-average, sequential
+  input/target coverage and wrap, tokens/optimizer counts, invalid factors,
+  preparation cache budget includes accumulation, exact interrupted/resumed
+  random/sequential compiled accumulated runs, rejection of factor changes and
+  old checkpoint compatibility. Extended stats on/off still give identical
+  training with accumulation; noise token counts effective. Existing attention,
+  numerics, progress and Torch checks passed; syntax/config/cache/whitespace
+  checks passed. No substantial training launched or quality/speed result claimed.
+- User to run accumulation4 then compare losses by processed tokens against
+  baselineclip1. Existing notebook step axes must account for4x tokens/update
+  before adding the new run to analysis; historical baseline sections unchanged.
+
+## 2026-11-17 — Analyze completed accumulation4 run
+
+- User requested results check. Accum4 completed50k updates/512M targets with
+  202stats/402metric rows. Verified same model/data/cache/tokenizer and measured
+  initialization as baseline; same LR/clip1 with token-matched warmup/decay.
+- Final main validation4.364533 vsbaseline4.490215; best4.350935 at492.8M tokens
+  vs4.441736 at474.88M. Final perplexity78.61265 vs89.14059 (~11.81%lower).
+  Accum slower early (0–128M matched mean delta+0.13882), then wins all300matched
+  evaluations after128M. Matched last25.6M mean delta−0.110204 (20evals); whole
+  last128M delta−0.106729. Fixed train/heldout probes4.261803/4.177821 vsbaseline
+  4.371099/4.289553. Clear descriptive improvement for this seed/budget, not
+  proof of seed-robustness or acceptable sample coherence (samples still weak).
+- Overall clipping94.964%, again100%late; last25.6M interval normmean3.624 vs
+  baseline10.563. Final LayerNorm weightRMS5.475vs14.336; firstattention activation
+  cosine−0.446 vsclip5−0.942. Larger batch follows different scale trajectory;
+  smaller raw norms cannot be attributed solely to variance reduction.
+- Noise at identical initialization: ratio0.1322 vsclip5(singlemicrobatch)0.5112,
+  consistent with4x averaging. Late median ratio5.07185/cos0.1660 vsclip5
+  5.59994/0.1507 at different trained weights. Finalratio6.9957/token-scale71635.7
+  is not evidence to set batchsize71k. Four fixed samples and raw-gradient estimate
+  remain limited; late noise has not disappeared. Baselineclip1 lacks noise logs.
+- Important mechanism ambiguity:4x fewer Adam steps at same betas/weightdecay
+  changes token-scale momentum and cumulative regularization. Calculated isolated
+  matrix decay product(exp sum log1p(-LR*WD))0.0369926baseline vs0.438559accum;
+  this is not observed total weight shrinkage (gradients also act; LN vectors
+  excluded). Future accumulated WD0.4 run could approximately restore baseline
+  decay budget; repeat seed can check reliability. No new config/training started.
+- Extended notebook06 with token-aligned4run comparison, matched deltas, noise
+  and activation-scale plots. Executed all15code cells, embedded13figures(~3.22MB),
+  visually checked3newfigures, checked JSON/syntax/output integrity. Updated index
+  to explain accum_name and token comparison. No model loading/evaluation/training.
+  Whitespace check passed. Prior notebook results retained.
+- Observed runtime84.97min vsbaseline79.98; timed collector34.87sec. Not a controlled
+  speed benchmark. Accum4 is current best quality baseline for next experiments;
+  no claim that further accumulation/longer training will necessarily improve it.
+
+## 2026-11-17 — Explain gradient-noise estimator and paper interpretation
+
+- User requested calculation/paper takeaway/batch estimate explanation before
+  further experiments. Re-read source2.2–2.6 andappendixA.1/A.2:
+  https://arxiv.org/html/1812.06162v1 . Reviewed implemented estimator against it.
+- Explained frozen-weight raw batch gradients, unbiased batch variance trace
+  V=sum||gi-gbar||²/(K−1), corrected squared signal Q=||gbar||²−V/K, ratioV/Q,
+  simple noise scale B*V/Q. Ratios are variance/squared-signal, not amplitude;
+  negative/nonpositive Q is finite-sample uncertainty, logged null.
+- Units: independent sampled windows are underlying examples; token scale is
+  window count×fixedcontextlength, not an assumption of token independence.
+  At same initial weights: B2560 ratio0.511→scale1309;B10240 ratio0.132→scale1354.
+  Noise ratio decreases withbatch while underlying scale is approximatelystable.
+- Prior19.9ktoken value was endpointclip5 estimate2560*7.775;would suggest
+  ratio~1 at20k only at sameweights/distribution. Not a globally optimal batch.
+  Current evolved-model estimate can differ, plus four fixedbatches are noisy.
+- Paper predicts critical diminishing-returns batchscale at order-of-magnitude,
+  distinguishes simplified traceΣ/||G||² from curvature-aware fullscale. Study
+  tunes LR perbatch and does not directly prescribe lowest-validation-loss batch
+  at fixedtoken budget. Parallel step savings are not serial accumulation speedup.
+- Paper averages signal/variance estimates separately before ratio; our logger
+  records lightweight four-batch point estimates (ratio biased/noisy). More probes
+  or averaging components can improve reliability; no logging changes made here.
+
+## 2026-11-17 — Prepare accumulation8 comparison config
+
+- User requested factor8 config. Copied accumulation4 to
+  sequential_gpt_mlx_diagnostics_accum8.toml: microbatch10,A8,effective80sequences/
+  20480tokens;25k updates and250warmup,decay25k; LR3e-4→3e-5,clip1,WD0.1 unchanged.
+  Stats/checkpoint/generation125updates,noise625 preserve token spacing;eval125
+  corresponds to every other accumulation4 eval by tokens. All probes retained.
+  Output gpt-mlx-basic-diagnostics-accum8-01; fresh run using existing cache.
+- Parsed/compared TOMLs: only accumulation/step counts/report intervals/output
+  differ; model/data/seed/optimizer parameters unchanged. Verified512Mtarget
+  budget/cache identity and noise cadence divisibility. No code changes or
+  training executed; no additional tests needed for config-only change.
+
+## 2026-11-17 — Save gradient-noise explanation as Markdown
+
+- User explicitly requested prior explanation in Markdown because formulas did
+  not render in conversation. Added docs/pretraining/gradient_noise.md using
+  note-template structure: frozen-weight noise intuition, V/Q estimator and
+  correction, B*V/Q batch scale,19.9k worked example, ratio-vs-scale initialization
+  table, paper takeaway, code differences, measured observations/open questions.
+  Uses standalone $$ LaTeX blocks plus a plain-text formula fallback.
+- Linked note from pretraining docs index and statistics module docstring.
+  Checked balanced math/code fences, local links, Python docstring syntax and
+  git diff --check. No runtime behavior changes, training or evaluation.
+
+## 2026-11-17 — Commit and push optimization/diagnostics work
+
+- User requested commit+push while their latest experiment trains. Reviewed all
+  pending changes: MLX warmup/cosine schedules and LR overrides on resume;
+  per-update train display; optional gradient/update/probe statistics, activation/
+  logit and gradient-noise collection; gradient accumulation with token-correct
+  preparation, progress and checkpoint compatibility; matched experiment configs;
+  executed notebook06, gradient-noise note and updated instructions/backlog.
+- Final verification for this snapshot:41 focused CPU tests passed(4.67s) across
+  accumulation, statistics, pretraining, checkpoint, progress, prepare CLI and
+  attention. Notebook15code cells/13embedded figures and new Python/config syntax
+  validated; git diff --check passed. Did not rerun Metal/GPU checks or notebooks
+  while user training is active; saved graph executions were verified earlier.
+- Include source/configs/tests/docs/notebook+outputs and this log; ignored raw
+  training artifacts, caches, checkpoints and local kernel assets remain local.
+  No active run/config modified. Commit/push requested to origin/main.
+- User-run work remaining: finish active experiment, analyze at matched token
+  budgets, and choose next LR/weight-decay comparison. Discussed doubling LR and
+  halving WD to preserve decay product; no such config/run created yet. Existing
+  single-seed comparisons do not isolate accumulation's mechanism.

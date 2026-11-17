@@ -53,7 +53,8 @@ def log_run(output_dir: Path, metadata: dict):
     try:
         with (output_dir / "metrics.csv").open("x", newline="", encoding="utf-8") as file:
             writer = csv.DictWriter(file, fieldnames=["step", "train_loss", "val_loss",
-                                                      "elapsed_seconds", "tokens_processed", "tokens_per_second"])
+                                                      "elapsed_seconds", "tokens_processed", "tokens_per_second",
+                                                      "learning_rate"])
             writer.writeheader()
             file.flush()
 

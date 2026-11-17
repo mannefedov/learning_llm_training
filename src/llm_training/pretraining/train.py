@@ -95,10 +95,11 @@ def train(
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), config.grad_clip)
             optimizer.step()
+            train_loss = loss.item()
             if step == 1 or step % config.eval_every == 0 or step == config.steps:
                 val_loss = evaluate(model, val_tokens, config)
-                progress.update(step, train_loss=loss.item(), val_loss=val_loss)
+                progress.update(step, train_loss=train_loss, val_loss=val_loss)
                 if record_metrics is not None:
-                    record_metrics(step, loss.item(), val_loss, progress.metrics())
-            progress.update(step)
+                    record_metrics(step, train_loss, val_loss, progress.metrics())
+            progress.update(step, train_loss=train_loss)
     return optimizer

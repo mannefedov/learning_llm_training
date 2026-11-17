@@ -50,10 +50,18 @@ class CheckpointTests(unittest.TestCase):
     @patch("llm_training.tokenization.data.iter_dataset_texts",
            side_effect=lambda **kwargs: (s for s in ["hello world " * 50]))
     def test_interrupted_run_resumes_identically_for_both_sampling_modes(self, texts):
-        for sampling in ("random", "sequential"):
-            with self.subTest(sampling=sampling), TemporaryDirectory() as temporary, redirect_stdout(io.StringIO()):
+        for sampling, schedule, accumulation in (("random", "constant", 1), ("sequential", "constant", 1),
+                                                 ("sequential", "cosine", 1), ("sequential", "cosine", 2),
+                                                 ("random", "cosine", 2)):
+            with self.subTest(sampling=sampling, schedule=schedule, accumulation=accumulation), TemporaryDirectory() as temporary, redirect_stdout(io.StringIO()):
                 root = Path(temporary)
                 config = self.make_config(root, sampling, steps=8)
+                config.write_text(config.read_text().replace(
+                    '[training]\n', f'[training]\ngradient_accumulation_steps={accumulation}\n'))
+                if schedule == "cosine":
+                    config.write_text(config.read_text().replace(
+                        '[training]\n', '[training]\nlr_schedule="cosine"\n'
+                        'warmup_steps=2\nlr_decay_steps=8\nmin_learning_rate=0.00003\n'))
                 save = CheckpointWriter.__call__
 
                 def interrupted(writer, step, optimizer, generator):
@@ -66,6 +74,11 @@ class CheckpointTests(unittest.TestCase):
                         train_from_config(config)
                 pointer = root / "run/checkpoint.json"
                 self.assertEqual(json.loads(pointer.read_text())["step"], 6)
+                if accumulation == 1:
+                    # Checkpoints from before accumulation imply factor one.
+                    saved = json.loads(pointer.read_text())
+                    saved["training_config"].pop("gradient_accumulation_steps")
+                    pointer.write_text(json.dumps(saved))
                 self.assertEqual(len(list((root / "run/checkpoints").glob("step-*"))), 1)
                 resumed = train_from_config(config, resume=pointer.parent)
                 self.assertEqual(len(list((resumed.parent / "checkpoints").glob("step-*"))), 1)
@@ -80,6 +93,10 @@ class CheckpointTests(unittest.TestCase):
                         self.assertTrue(mx.array_equal(actual[name], expected[name]).item(), (field, name))
                 metadata = json.loads((resumed.parent / "metadata.json").read_text())
                 self.assertEqual(metadata["start_step"], 6)
+                self.assertEqual(metadata["effective_batch_size"], 2 * accumulation)
+                self.assertEqual(metadata["tokens_per_update"], 8 * accumulation)
+                if sampling == "sequential":
+                    self.assertEqual(metadata["steps_per_epoch"], 5 // accumulation)
                 with self.assertRaisesRegex(ValueError, "total greater"):
                     train_from_config(config, resume=resumed)
                 original_config = config.read_text()
@@ -94,6 +111,11 @@ class CheckpointTests(unittest.TestCase):
                     self.assertTrue(mx.allclose(actual[name], expected[name], atol=2e-6, rtol=2e-5).item(), name)
                 config.write_text(original_config.replace("stable_softmax=true", "stable_softmax=false"))
                 with self.assertRaisesRegex(ValueError, "model configuration"):
+                    train_from_config(config, resume=pointer)
+                config.write_text(original_config)
+                config.write_text(config.read_text().replace(
+                    f"gradient_accumulation_steps={accumulation}", f"gradient_accumulation_steps={accumulation + 1}"))
+                with self.assertRaisesRegex(ValueError, "gradient_accumulation_steps"):
                     train_from_config(config, resume=pointer)
                 config.write_text(original_config)
                 config.write_text(config.read_text().replace("batch_size=2", "batch_size=1"))

@@ -14,6 +14,11 @@ from unittest.mock import patch
 import importlib.util
 import random
 
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
+
 if importlib.util.find_spec("mlx") is None:
     raise unittest.SkipTest("Install the pretraining-mlx extra on Apple silicon")
 
@@ -24,7 +29,7 @@ from mlx.utils import tree_flatten, tree_unflatten
 
 from llm_training.models.gpt_mlx import GPT, GPTConfig
 from llm_training.pretraining_mlx.data import encode_documents, get_batch
-from llm_training.pretraining_mlx.train import TrainConfig, train
+from llm_training.pretraining_mlx.train import TrainConfig, train, learning_rate_at_step
 from llm_training.pretraining_mlx.__main__ import train_from_config
 from llm_training.pretraining_mlx.tracking import log_run
 from llm_training.tokenization.bpe import train_byte_level_bpe
@@ -78,6 +83,67 @@ class PretrainingTests(unittest.TestCase):
         with redirect_stdout(io.StringIO()):
             train(model, tokens, tokens, config)
         self.assertLess(model(x, y)[1].item(), initial)
+
+    def test_cosine_schedule_boundaries_and_validation(self):
+        config = TrainConfig(steps=10, lr_schedule="cosine", warmup_steps=2,
+                             learning_rate=3e-4, min_learning_rate=3e-5)
+        for step, expected in [(0, 0), (1, 1.5e-4), (2, 3e-4),
+                               (6, 1.65e-4), (10, 3e-5), (20, 3e-5)]:
+            self.assertAlmostEqual(learning_rate_at_step(config, step), expected)
+        no_warmup = TrainConfig(steps=3, lr_schedule="cosine")
+        self.assertAlmostEqual(learning_rate_at_step(no_warmup, 1), 3e-4)
+        self.assertAlmostEqual(learning_rate_at_step(no_warmup, 3), 3e-5)
+        self.assertEqual(learning_rate_at_step(TrainConfig(), 500), 3e-4)
+        for fields in [dict(lr_schedule="unknown"), dict(warmup_steps=1),
+                       dict(lr_schedule="cosine", warmup_steps=-1),
+                       dict(lr_schedule="cosine", warmup_steps=True),
+                       dict(lr_schedule="cosine", warmup_steps=500),
+                       dict(lr_schedule="cosine", lr_decay_steps=1),
+                       dict(lr_schedule="cosine", lr_decay_steps=2.5),
+                       dict(lr_schedule="cosine", min_learning_rate=0.001),
+                       dict(lr_schedule="cosine", min_learning_rate=float("nan"))]:
+            with self.subTest(fields=fields), self.assertRaises(ValueError):
+                TrainConfig(**fields)
+
+    def test_scheduled_updates_resume_without_restarting_warmup(self):
+        mx.random.seed(7)
+        model_config = GPTConfig(vocab_size=4, context_length=4, n_layers=1, n_heads=1, d_model=8)
+        full = GPT(model_config)
+        mx.eval(full.parameters())
+        split = GPT(model_config)
+        split.load_weights(tree_flatten(full.parameters()))
+        settings = dict(batch_size=2, eval_every=1, eval_batches=1, device="cpu",
+                        lr_schedule="cosine", warmup_steps=2, lr_decay_steps=6,
+                        learning_rate=3e-4, min_learning_rate=3e-5)
+        tokens = mx.array([0, 1, 2, 3] * 10)
+        rates, rows, rng_states = [], [], []
+
+        def capture(step, optimizer, generator):
+            rates.append(optimizer.learning_rate.item())
+            rng_states.append(generator.getstate())
+
+        with redirect_stdout(io.StringIO()):
+            train(full, tokens, tokens, TrainConfig(steps=6, **settings))
+            optimizer = train(split, tokens, tokens, TrainConfig(steps=3, **settings),
+                              record_checkpoint=capture)
+            with TemporaryDirectory() as directory:
+                # Exercise serialized optimizer state as used by checkpoints.
+                path = Path(directory) / "optimizer.safetensors"
+                mx.save_safetensors(str(path), dict(tree_flatten(optimizer.state)))
+                from llm_training.pretraining_mlx.train import make_optimizer
+                optimizer = make_optimizer(TrainConfig(steps=6, **settings))
+                optimizer.state = tree_unflatten(mx.load(str(path)))
+                train(split, tokens, tokens, TrainConfig(steps=6, **settings),
+                      optimizer=optimizer, start_step=3, batch_rng_state=rng_states[-1],
+                      record_checkpoint=capture,
+                      record_metrics=lambda step, loss, val, metrics: rows.append((step, metrics)))
+        for step, rate in enumerate(rates, start=1):
+            self.assertAlmostEqual(rate, learning_rate_at_step(TrainConfig(steps=6, **settings), step))
+        self.assertAlmostEqual(rows[-1][1]["learning_rate"], 3e-5)
+        self.assertEqual([row[0] for row in rows], [3, 4, 5, 6])
+        for (name, expected), (_, actual) in zip(tree_flatten(full.parameters()),
+                                               tree_flatten(split.parameters())):
+            self.assertTrue(mx.allclose(expected, actual, atol=1e-7, rtol=1e-6).item(), name)
 
     @patch("llm_training.tokenization.data.iter_dataset_texts")
     def test_config_training_checkpoint_and_generation(self, iter_texts):
@@ -189,12 +255,19 @@ class PretrainingTests(unittest.TestCase):
                 '[model]\ncontext_length=4\nn_layers=1\nn_heads=1\nd_model=8\n'
                 'attention_types=["sliding_window"]\nsliding_window=2\n'
                 '[training]\nsteps=2\nbatch_size=2\nsampling="sequential"\neval_batches=1\ndevice="cpu"\n'
+                '[statistics]\nevery=2\nprobe_batches=1\nactivations=true\nlogits=true\n'
+                'gradient_noise_batches=2\ngradient_noise_every=2\n'
                 '[generation]\nenabled=false\n'
                 f'[cache]\ndirectory="{root}/cache"\n[output]\ndirectory="{root}/run"\n')
             texts.side_effect = AssertionError("Training must use the local cache")
             with redirect_stdout(io.StringIO()):
                 checkpoint = train_from_config(config)
             self.assertEqual(json.loads(checkpoint.read_text())["step"], 2)
+            statistics = [json.loads(line) for line in
+                          (checkpoint.parent / "statistics.jsonl").read_text().splitlines()]
+            self.assertEqual([row["step"] for row in statistics], [0, 1, 2])
+            self.assertTrue(all("gradient_noise" in row for row in statistics))
+            self.assertIn("logits", statistics[-1]["probes"])
             from llm_training.pretraining_mlx.generate import load_checkpoint, generate_text
             restored, saved_tokenizer, eos_id = load_checkpoint(checkpoint.parent, device="cpu")
             self.assertEqual(restored.config.attention_types, ["sliding_window"])
@@ -211,6 +284,46 @@ class PretrainingTests(unittest.TestCase):
             resumed_metadata = json.loads((continued.parent / "metadata.json").read_text())
             self.assertEqual(resumed_metadata["steps_per_epoch"], 2)
             self.assertEqual(resumed_metadata["target_epochs"], 1.5)
+            from llm_training.pretraining_mlx.statistics import StatisticsConfig
+            self.assertEqual(resumed_metadata["statistics_config"], asdict(StatisticsConfig(
+                every=2, probe_batches=1, activations=True, logits=True,
+                gradient_noise_batches=2, gradient_noise_every=2)))
+            statistics = [json.loads(line) for line in
+                          (continued.parent / "statistics.jsonl").read_text().splitlines()]
+            self.assertEqual([row["step"] for row in statistics], [2, 3])
+            self.assertEqual(statistics[-1]["interval"]["updates"], 1)
+
+            # A changed LR must survive loading the old optimizer state, while
+            # Adam moments, step, and model weights remain exactly as saved.
+            from llm_training.pretraining_mlx.checkpoint import restore_checkpoint
+            from llm_training.pretraining_mlx.train import make_optimizer
+            config.write_text(config.read_text().replace("steps=3", "steps=4")
+                              .replace('[training]\n', '[training]\nlearning_rate=0.00003\n'))
+            settings = tomllib.loads(config.read_text())
+            training = TrainConfig(**settings["training"])
+            saved = json.loads(continued.read_text())
+            model = GPT(GPTConfig(**saved["model_config"]))
+            optimizer = make_optimizer(training)
+            step, _ = restore_checkpoint(continued, model, optimizer, settings, training,
+                                         root / "tokenizer.json", saved["token_cache"])
+            self.assertEqual(step, 3)
+            old_state = mx.load(str(continued.parent / saved["optimizer"]))
+            for key, value in tree_flatten(optimizer.state):
+                if key == "learning_rate":
+                    self.assertAlmostEqual(value.item(), 0.00003)
+                else:
+                    self.assertTrue(mx.array_equal(value, old_state[key]).item(), key)
+            old_weights = mx.load(str(continued.parent / saved["model"]))
+            for key, value in tree_flatten(model.parameters()):
+                self.assertTrue(mx.array_equal(value, old_weights[key]).item(), key)
+            with redirect_stdout(io.StringIO()):
+                lower_lr = train_from_config(config, resume=continued)
+            latest = json.loads(lower_lr.read_text())
+            state = mx.load(str(lower_lr.parent / latest["optimizer"]))
+            self.assertEqual(state["step"].item(), 4)
+            self.assertAlmostEqual(state["learning_rate"].item(), 0.00003)
+            self.assertEqual(latest["training_config"]["learning_rate"], 0.00003)
+            self.assertEqual(json.loads(continued.read_text())["step"], 3)
 
     def test_generation_eos_and_invalid_inputs(self):
         from unittest.mock import Mock

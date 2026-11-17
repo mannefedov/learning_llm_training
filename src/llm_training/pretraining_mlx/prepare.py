@@ -21,7 +21,10 @@ def main():
     from llm_training.pretraining.token_cache import prepare_cache
 
     config = tomllib.loads(args.config.read_text(encoding="utf-8"))
-    token_limit = (config["training"]["steps"] * config["training"]["batch_size"]
+    accumulation = config["training"].get("gradient_accumulation_steps", 1)
+    if not isinstance(accumulation, int) or isinstance(accumulation, bool) or accumulation < 1:
+        raise ValueError("gradient_accumulation_steps must be a positive integer")
+    token_limit = (config["training"]["steps"] * config["training"]["batch_size"] * accumulation
                    * config["model"]["context_length"] + 1)
     prepare_cache(Path(config["cache"]["directory"]), config["data"],
                   Path(config["tokenizer"]["path"]), config["tokenizer"]["eos_token"], token_limit,

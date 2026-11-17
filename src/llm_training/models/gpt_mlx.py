@@ -27,9 +27,24 @@ class Block(nn.Module):
             nn.Linear(4 * config.d_model, config.d_model),
         )
 
-    def __call__(self, x):
-        x = x + self.attention(self.attention_norm(x))
-        return x + self.mlp(self.mlp_norm(x))
+    def __call__(self, x, *, activation_observer=None):
+        normalized = self.attention_norm(x)
+        attention = self.attention(normalized)
+        if activation_observer is not None:
+            activation_observer("attention_norm", normalized)
+            activation_observer("attention_output", attention)
+        x = x + attention
+        if activation_observer is not None:
+            activation_observer("attention_residual", x)
+        normalized = self.mlp_norm(x)
+        mlp = self.mlp(normalized)
+        if activation_observer is not None:
+            activation_observer("mlp_norm", normalized)
+            activation_observer("mlp_output", mlp)
+        x = x + mlp
+        if activation_observer is not None:
+            activation_observer("mlp_residual", x)
+        return x
 
 
 class GPT(nn.Module):
@@ -51,14 +66,23 @@ class GPT(nn.Module):
 
         self.update(tree_map_with_path(initialize, self.parameters()))
 
-    def __call__(self, input_ids, targets=None):
+    def __call__(self, input_ids, targets=None, *, activation_observer=None):
         if input_ids.ndim != 2 or not 1 <= input_ids.shape[1] <= self.config.context_length:
             raise ValueError("input_ids must have shape (batch, time) within context_length")
         x = self.token_embedding(input_ids) + self.position_embedding(mx.arange(input_ids.shape[1]))
-        for block in self.blocks:
-            x = block(x)
+        if activation_observer is not None:
+            activation_observer("embedding", x)
+        for index, block in enumerate(self.blocks):
+            if activation_observer is None:
+                x = block(x)
+            else:
+                x = block(x, activation_observer=lambda name, value: activation_observer(
+                    f"blocks.{index}.{name}", value))
         # Use the embedding matrix directly so it is stored and optimized only once.
-        logits = self.token_embedding.as_linear(self.final_norm(x))
+        x = self.final_norm(x)
+        if activation_observer is not None:
+            activation_observer("final_norm", x)
+        logits = self.token_embedding.as_linear(x)
         loss = None
         if targets is not None:
             if targets.shape != input_ids.shape:

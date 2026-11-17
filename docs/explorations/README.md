@@ -1,5 +1,9 @@
 # Explore later
 
+2026-11-17: focus current experiments on fitting a basic 256-token full-attention
+model and collecting training diagnostics. Keep 4K context and attention-kernel
+optimization parked until the basic training behavior is understood.
+
 ## Fused attention backward on MLX
 
 Parked 2026-11-16: user tried the NAX backward in actual training and observed

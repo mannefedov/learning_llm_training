@@ -8,6 +8,20 @@ import unittest
 
 
 class PrepareCliTests(unittest.TestCase):
+    def test_accumulation_counts_all_microbatches_in_cache_budget(self):
+        from unittest.mock import patch
+        from llm_training.pretraining_mlx.prepare import main
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "config.toml"
+            path.write_text('[data]\n[tokenizer]\npath="unused.json"\neos_token="eos"\n'
+                            '[training]\nsteps=2\nbatch_size=3\ngradient_accumulation_steps=4\n'
+                            '[model]\ncontext_length=5\n[cache]\ndirectory="unused-cache"\n')
+            with patch("sys.argv", ["prepare", "--config", str(path)]), patch(
+                "llm_training.pretraining.token_cache.prepare_cache"
+            ) as prepare:
+                main()
+            self.assertEqual(prepare.call_args.args[4], 2 * 3 * 4 * 5 + 1)
+
     def test_success_bypasses_shutdown_but_errors_keep_normal_exit(self):
         for fail in (False, True):
             with self.subTest(fail=fail), TemporaryDirectory() as temporary:
