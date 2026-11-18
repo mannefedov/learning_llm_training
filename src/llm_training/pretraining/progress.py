@@ -1,7 +1,9 @@
 """Small terminal progress display shared by both training backends."""
 
-import sys
+import os
 import shutil
+import sys
+import textwrap
 import time
 
 
@@ -13,7 +15,7 @@ def format_duration(seconds: float) -> str:
 
 
 class TrainingProgress:
-    """Refresh one terminal line; emit sparse lines when output is redirected.
+    """Refresh a terminal status block; emit sparse lines for redirected output.
 
     ETA uses average wall time per completed update, including validation and
     sampling. It excludes data preparation and final checkpoint writing.
@@ -30,10 +32,10 @@ class TrainingProgress:
         self.val_loss = None
         self.learning_rate = None
         self.stream = sys.stdout
-        self.interactive = self.stream.isatty()
+        self.interactive = self.stream.isatty() and os.environ.get("TERM") != "dumb"
+        self.display_rows = 0
         self.started = time.monotonic()
         self.last_display = self.started
-        self.line_width = 0
 
     def __enter__(self):
         self._display()
@@ -81,17 +83,24 @@ class TrainingProgress:
         line = (f"{status} [{bar}] {100 * self.step / self.total:5.1f}% "
                 f"{self.step}/{self.total}{rate} elapsed={format_duration(elapsed)} ETA={eta}{epochs}{losses}")
         if self.interactive:
-            # Avoid wrapping an updating line on narrow terminals.
-            width = max(1, shutil.get_terminal_size().columns - 1)
-            if len(line) > width:
-                line = line.replace(f" [{bar}]", "")
-            line = line[:width]
-            self.stream.write("\r" + line.ljust(min(self.line_width, width)))
-            self.line_width = len(line)
+            self._redraw(line)
         else:
             self.stream.write(line + "\n")
         self.stream.flush()
         self.last_display = now
+
+    def _redraw(self, line):
+        try:
+            width = os.get_terminal_size(self.stream.fileno()).columns
+        except (AttributeError, OSError, ValueError):
+            width = shutil.get_terminal_size().columns
+        # Keep a spare column so the terminal doesn't wrap on its own.
+        rows = textwrap.wrap(line, width=max(1, width - 1), break_on_hyphens=False)
+        # The cursor is on the last row of the previous block. Erase its rows
+        # from bottom to top, then write the replacement from that same origin.
+        clear = "\r\x1b[2K" + "\x1b[1A\x1b[2K" * max(0, self.display_rows - 1)
+        self.stream.write(clear + "\r\n".join(rows))
+        self.display_rows = len(rows)
 
     def __exit__(self, error_type, error, traceback):
         self._display("finished" if error_type is None else "stopped")

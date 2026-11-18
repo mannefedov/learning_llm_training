@@ -1,0 +1,69 @@
+# Width-256 model trained on 2.048B tokens: four times the 512M-token budget.
+[data]
+dataset_id = "HuggingFaceFW/fineweb-2"
+subset = "rus_Cyrl"
+train_split = "train"
+val_split = "test"
+# Upper limit: preparation stops earlier when the token budget is full.
+train_documents = 20000000
+val_documents = 100
+seed = 42
+shuffle_buffer_size = 0
+# revision = "<dataset commit SHA>"
+
+[tokenizer]
+path = "artifacts/tokenization/fineweb2-rus-bpe-8k-02/tokenizer.json"
+eos_token = "<|endoftext|>"
+
+[model]
+attention_backend = "reference"
+stable_softmax = false
+# Vocabulary size comes from the actual tokenizer.
+context_length = 256
+n_layers = 4
+n_heads = 4
+d_model = 256
+
+[training]
+compile_step = true
+lr_schedule = "cosine"
+warmup_steps = 250
+min_learning_rate = 0.00006
+lr_decay_steps = 100000
+sampling = "sequential"
+steps = 100000
+batch_size = 10
+gradient_accumulation_steps = 8  # Effective batch: 80 sequences / 20,480 tokens.
+learning_rate = 0.0006
+weight_decay = 0.05  # Preserve LR * decay relative to accumulation8 baseline.
+grad_clip = 1.0
+eval_every = 125  # Same token spacing as every other accumulation4 evaluation.
+eval_batches = 10
+seed = 42
+device = "auto"  # Metal GPU, then CPU; or specify "cpu" / "gpu".
+
+[statistics]
+every = 125  # Also collect at initialization, first update and final update.
+probe_batches = 2
+activations = true
+logits = true
+gradient_noise_batches = 4
+gradient_noise_every = 625  # Extra backward probes; multiple of statistics.every.
+
+[checkpoint]
+every = 125
+keep = 1
+
+[generation]
+enabled = true
+every = 125
+prompts = ["Сегодня утром я", "В Москве сегодня"]
+max_new_tokens = 100
+temperature = 0.8
+seed = 42
+
+[cache]
+directory = "artifacts/data/fineweb2-rus-2b-tokens"
+
+[output]
+directory = "artifacts/pretraining/gpt-mlx-basic-diagnostics-width256-2b-01"

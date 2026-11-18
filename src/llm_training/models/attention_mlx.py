@@ -16,12 +16,22 @@ def masked_attention(q, k, v, allowed, *, stable=False):
     return weights @ v
 
 
+def masked_attention_scaled(q, k, v, allowed, *, scale, stable=False):
+    scores = (q @ k.swapaxes(-2, -1)) * scale
+    scores = mx.where(allowed, scores, -float("inf"))
+    weights = stable_softmax(scores) if stable else mx.softmax(scores, axis=-1)
+    return weights @ v
+
+
 class CausalSelfAttention(nn.Module):
     def __init__(self, config: GPTConfig):
         super().__init__()
         self.n_heads = config.n_heads
         self.backend = config.attention_backend
         self.stable_softmax = config.stable_softmax
+        self.attention_scale = (1 / (config.d_model // config.n_heads)
+                                if config.parametrization == "mup"
+                                else 1 / math.sqrt(config.d_model // config.n_heads))
         self.qkv = nn.Linear(config.d_model, 3 * config.d_model)
         self.proj = nn.Linear(config.d_model, config.d_model)
 
@@ -29,11 +39,12 @@ class CausalSelfAttention(nn.Module):
         if self.backend in ("mlx_fused", "mlx_fused_window"):
             # The string mask enables fused causal backward; an array mask does not.
             return mx.fast.scaled_dot_product_attention(
-                q, k, v, scale=1 / math.sqrt(q.shape[-1]),
+                q, k, v, scale=self.attention_scale,
                 mask="causal", force_fused=True)
         positions = mx.arange(q.shape[2])
-        return masked_attention(q, k, v, positions[:, None] >= positions[None, :],
-                                stable=self.stable_softmax)
+        return masked_attention_scaled(q, k, v, positions[:, None] >= positions[None, :],
+                                       scale=self.attention_scale,
+                                       stable=self.stable_softmax)
 
     def __call__(self, x):
         batch, length, width = x.shape
@@ -61,7 +72,7 @@ class SlidingWindowAttention(CausalSelfAttention):
     def attend(self, q, k, v):
         if self.backend == "mlx_fused_window":
             return mx.fast.scaled_dot_product_attention(
-                q, k, v, scale=1 / math.sqrt(q.shape[-1]), mask="causal",
+                q, k, v, scale=self.attention_scale, mask="causal",
                 window_size=self.window_size, force_fused=True)
         length = q.shape[2]
         tiles = []
@@ -70,8 +81,10 @@ class SlidingWindowAttention(CausalSelfAttention):
             key_start = max(0, start - self.window_size + 1)
             distance = mx.arange(start, end)[:, None] - mx.arange(key_start, end)[None, :]
             allowed = (distance >= 0) & (distance < self.window_size)
-            tiles.append(masked_attention(q[:, :, start:end], k[:, :, key_start:end],
-                                          v[:, :, key_start:end], allowed, stable=self.stable_softmax))
+            tiles.append(masked_attention_scaled(q[:, :, start:end], k[:, :, key_start:end],
+                                                 v[:, :, key_start:end], allowed,
+                                                 scale=self.attention_scale,
+                                                 stable=self.stable_softmax))
         return mx.concatenate(tiles, axis=2)
 
 

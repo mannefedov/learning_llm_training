@@ -19,6 +19,38 @@ class Terminal(io.StringIO):
 
 
 class ProgressTests(unittest.TestCase):
+    def test_multiline_status_redraws_when_terminal_width_changes(self):
+        output = Terminal()
+        clear_row = "\x1b[2K"
+        with redirect_stdout(output), patch(
+            "llm_training.pretraining.progress.shutil.get_terminal_size",
+            return_value=os.terminal_size((42, 30)),
+        ) as size:
+            progress = TrainingProgress(100, steps_per_epoch=50, tokens_per_step=8192)
+            progress.train_loss, progress.val_loss = 3.5, 4.0
+            progress.learning_rate = 0.001
+            progress._display()
+            narrow = output.getvalue().removeprefix("\r" + clear_row).split("\r\n")
+            self.assertGreater(len(narrow), 1)
+            self.assertTrue(all(len(row) <= 41 for row in narrow))
+            for field in ("tok/s=", "elapsed=", "ETA=", "epochs=", "train=", "val=", "lr="):
+                self.assertIn(field, " ".join(narrow))
+
+            size.return_value = os.terminal_size((160, 30))
+            previous = output.tell()
+            progress._display()
+            redraw = output.getvalue()[previous:]
+            self.assertEqual(redraw.count("\x1b[1A"), len(narrow) - 1)
+            self.assertEqual(redraw.count(clear_row), len(narrow))
+            self.assertNotIn("\n", redraw)
+
+            size.return_value = os.terminal_size((42, 30))
+            previous = output.tell()
+            progress._display()
+            redraw = output.getvalue()[previous:]
+            self.assertEqual(redraw.count(clear_row), 1)
+            self.assertEqual(redraw.count("\r\n"), len(narrow) - 1)
+
     def test_elapsed_eta_percent_and_terminal_cleanup(self):
         output = Terminal()
         with redirect_stdout(output), patch(

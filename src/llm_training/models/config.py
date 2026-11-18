@@ -14,6 +14,8 @@ class GPTConfig:
     sliding_window: int | None = None
     stable_softmax: bool = False
     attention_backend: str = "reference"
+    parametrization: str = "standard"
+    mup_base_width: int | None = None
 
     def __post_init__(self):
         if self.attention_backend not in ("reference", "mlx_fused", "mlx_fused_window"):
@@ -24,6 +26,12 @@ class GPTConfig:
             if (self.attention_backend == "mlx_fused" and self.attention_types
                     and "sliding_window" in self.attention_types):
                 raise ValueError("mlx_fused supports full attention only")
+        if self.parametrization not in ("standard", "mup"):
+            raise ValueError("parametrization must be standard or mup")
+        if self.parametrization == "mup":
+            if (not isinstance(self.mup_base_width, int) or isinstance(self.mup_base_width, bool)
+                    or self.mup_base_width < 1):
+                raise ValueError("mup_base_width must be a positive integer with parametrization='mup'")
         if not isinstance(self.stable_softmax, bool):
             raise ValueError("stable_softmax must be a boolean")
         if self.attention_types is not None:

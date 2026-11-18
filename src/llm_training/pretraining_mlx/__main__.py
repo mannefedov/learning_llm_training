@@ -78,7 +78,7 @@ def train_from_config(config_path: Path, resume: Path | None = None) -> Path:
     mx.set_default_device(choose_device(train_config.device))
     mx.random.seed(train_config.seed)
     model = GPT(model_config)
-    optimizer = make_optimizer(train_config)
+    optimizer = make_optimizer(train_config, model_config)
     start_step, batch_rng_state = 0, None
     cache_signature = cache_manifest if cached_tokens is not None else None
     if resume is not None:

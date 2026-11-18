@@ -1252,3 +1252,356 @@ Update this log before pushing work.
   budgets, and choose next LR/weight-decay comparison. Discussed doubling LR and
   halving WD to preserve decay product; no such config/run created yet. Existing
   single-seed comparisons do not isolate accumulation's mechanism.
+
+## 2026-11-17 — Analyze completed accumulation8 run
+
+- Latest metadata by started_at is gpt-mlx-basic-diagnostics-accum8-01, completed
+  25k updates/512M targets;202stats/202metrics rows. Matched initialization,
+  model/data/cache/tokenizer against accumulation4 and verified same LR/clip/WD,
+  token-matched schedule endpoints. No new training/model evaluation executed.
+- Final main val4.416162 vsaccum4 4.364533 andbaseline4.490215;best4.409142 at
+  24250updates/496.64M tokens. FinalPPL82.7779 vs78.6126(×4),89.1406(baseline).
+  ×8 loses all200matched noninitial evals to×4: mean differences+0.19862first128M,
+  +0.08184next128M,+0.05179next128M,+0.05386last128M. Last25.6M matched delta
+  +0.053921(10evals). Fixedtrain/heldoutprobes4.29685/4.19510 vs×4
+  4.26180/4.17782. ×4 remains best tested quality at this LR/budget.
+- Noise improvement observed: last128M medianratio1.69587 vs×4 5.07185,
+  meancosmedian0.37083vs0.16602 (different evolvedweights); finalratio1.9045,
+  token-scale39004.4. Initialratio0.07583/token-scale1552.9,cos0.92965.
+  Cleaner gradients did not yield better loss with unchanged LR and halfupdates;
+  suggests testing higherLR, not proof that largebatches are intrinsically worse.
+- Overall clipfraction89.764%,lastnormmean2.6206; finalLNweightRMS3.654vs5.475.
+  Final logits trainprobe top1accuracy0.2480,entropy4.4583. Observedruntime74.11min
+  vs×4 84.97; not a controlledspeedtest (evalcadence/hardwareconditions differ).
+- Appended ×8 notebook section: token-alignedloss+matchedΔ, noise/cos plots,
+  tables and observations. Suggested next experiment at same×8 isLR6e-4→6e-5,
+  WD0.05 to preserve per-updateLR×WD; no config/run created yet.
+  Executed all17code cells/15embeddedfigures(~3.61MB); visuallychecked2newplots,
+  JSON/syntax/output validation and git diff --check passed. Updated notebookindex.
+  New analysis remains uncommitted; earlier source snapshot was already pushed.
+
+## 2026-11-17 — Higher-LR accumulation8 config and scaling explanation
+
+- User authorized proposed ×8 higherLR/halfWD experiment and asked whether LR
+  should scale8× with batch. Prepared sequential_gpt_mlx_diagnostics_accum8_lr2x.toml:
+  peak6e-4/floor6e-5,WD0.05 vs×8baseline3e-4/3e-5,WD0.1; all other settings
+  unchanged (25k updates,512M targets,250warmup,clip1,allprobes). Output base
+  gpt-mlx-basic-diagnostics-accum8-lr2x-01. No training launched.
+- Parsed/compared full TOMLs and cache budget; only LR endpoints/WD/output differ.
+  Confirmed peak doubled andWDhalved preserve each update's LR×WD decay factor.
+  No source changes; git diff --check passed. Full training remains user-run.
+- Scaling explanation: ×8 vsoriginal×1 gives sqrt8 peak8.49e-4 or linear8 peak
+  2.4e-3; ×8 vsbest×4 is only2×batch, giving sqrt2 peak4.24e-4 or linear2 peak6e-4.
+  Prepared6e-4 is a reasonable first retuning point, not a claim of optimality.
+  FullAdam SDE scaling also changesbetas/epsilon, unlike this LR-only retuning.
+- Primary sources checked: Malladi author explanation
+  https://sadhikamalladi.github.io/blog/2024/01/22/SDEs-ScalingRules/ ;
+  https://arxiv.org/abs/2205.10287 ; gradient-noise paper §3.1/A.2/E.2
+  https://arxiv.org/html/1812.06162v1 . SGDlinear/Adamsqrt heuristic and empirical
+  exponents0.5–1 saturating with batch; no unconditional8×LR rule claimed.
+
+## 2026-11-18 — Analyze higher-LR accumulation8 result
+
+- Latest run accum8-lr2x-01 completed25kupdates/512Mtargets,202loss/202stats rows.
+  Confirmed same initialization/model/data/cache/tokenizer as×8 and×4. Versus×8,
+  onlyLR peak/floor doubled andWDhalved; LR×WD unchanged at bothendpoints and thus
+  whole identical-shape schedule. No new training or model evaluation performed.
+- New best: finalmainval4.314426,best4.300937 at496.64Mtokens,PPL74.77069.
+  Compare×4 final4.364533/PPL78.61265(~4.9%PPLgain),×8 final4.416162/PPL82.77793
+  (~9.7%PPLgain). HigherLR wins every matched noninitial eval againstboth.
+  Last25.6MmatchedmeanΔ−0.049592vs×4/−0.103513vs×8. Train/heldoutfixedprobes
+  improve to4.187645/4.104408. Supports LR retuning at largerbatch; not optimality
+  or multiseedrobustness. Multiplicative decay schedule unchanged vs×8, so altered
+  shrinkagefactor alone cannot explain result.
+- Newrun81.748%updatesclipped;late medianrawnoise/signal2.90070 versus×8
+  1.69587,cos0.25580vs0.37083. Bettervalidation despite higherlatemeasurednoise;
+  different trainedweights and lowernoise is nottrainingobjective. FinalLNweight
+  RMS4.28461vs×8 3.65418; logits entropy4.3513,top1trainprobeaccuracy0.2668.
+  Sample grammar/coherence still weak. Runtime72.70min observed, not speedbenchmark.
+- Added higher-LR notebooksection with table, matchedlossdifferences andnoise/cos
+  comparisons. Executed all18codecells,16embeddedfigures(~4.07MB), visuallyinspected
+  new4panel figure, validatedJSON/syntax/outputintegrity and git diff --check.
+  No source changes or tests beyond analysis validation needed. No newexperiment
+  config started by this resultscheck; currentnewbest setup remains×8,LR6e-4,
+  floor6e-5,WD0.05,clip1 for future comparisons.
+
+## 2026-11-18 — Review warmup, Adam betas, and remaining bottlenecks
+
+- Reviewed current best config and model/data/optimizer code: warmup250/25k
+  updates (1%,5.12M tokens), hardcoded Adam betas(0.9,0.95),1.850112M parameters
+  including1.024M token embeddings and32,768 positional parameters. No obvious
+  shift/mask/accumulation/decay correctness issue found; not an exhaustive audit.
+- Single real256-token checkpoint forward/backward comparison on CPU passed:
+  MLX/PyTorch loss absolute error9.54e-7,gradient relativeL2 error4.53e-6.
+  Temporary audit script in/private/tmp; MLX import required sandbox escalation.
+  Three Russian strings round-trip through tokenizer; three cache excerpts are
+  readable heterogeneous web text with some boilerplate, not a corpus-wide audit.
+- Reviewed warmup paper https://arxiv.org/abs/2406.09405 ; tied-beta article
+  https://kexue.fm/archives/11593 (full page403; search-indexed excerpts only),
+  optimizer comparison https://arxiv.org/html/2509.02046v1 and Hyperball paper
+  https://arxiv.org/html/2606.16899v1 . Tied-beta bound concerns update stability,
+  not universal convergence optimality; Hyperball is a separate optimizer change.
+- Explained stationary EMA variance/lag assumptions and raw-gradient versus
+  momentum-filtered noise. Suggested real-text overfit sanity check, wider model
+  at fixed context, data ordering/quality checks, and isolated beta/warmup tests.
+  No optimizer/config changes or training launched. Broader experiments remain
+  user-run; current512M budget is200k microbatches,25k accumulation8 updates.
+
+## 2026-11-18 — Run real Russian passage memorization diagnostic
+
+- User explicitly requested running the test. Added/executed notebook07 with
+  original289-token Russian passage, existing8k tokenizer, fresh1.850112M GPT,
+  reference stable attention/context256, compiled production train loop,
+  batch4/accumulation2, Adam(0.9,0.95),clip1,WD0.05,LR6e-4→6e-5,
+  20warmup/1000updates. No production training source/config changed.
+- First run(single passage+EOS=290tokens) has only34 possible256-token window
+  starts,0–33. Loss~4.77e-7 and opening continuation exact, but prompts at64/128
+  introduce unseen start positions and fail exact continuation. Preserved result:
+  artifacts/pretraining/memorization-20261118-085320-271520.
+- Second fresh run repeats passage twice(580tokens includingEOS), permitting
+  starts0–323. Same architecture/settings/seed. Loss9.018880→0.002150 in1000
+  updates/21.2seconds. Three64-token continuations atoffsets0/64/128 match exactly
+  for greedy AND production temperature0.2 generation. Teacher-forced accuracy
+  100%,100%,99.375%. Public checkpoint load preserves logits exactly.
+  Result:artifacts/pretraining/memorization-20261118-085459-496348/summary.json.
+- Notebook retains both runs,metrics,two embedded loss plots,all sample outputs,
+  short interpretation and rerunnable cells. Added notebookindex entry. Verified
+  codecell syntax/execution counts,embedded figures,saved pass/lowtemperature
+  matches; visually checked final loss curve. GPU required approved escalation.
+  Core path can memorize real text; generalization/full web-cache pipeline and
+  accumulation8 are not established by this diagnostic. Wider-model/data/beta
+  experiments remain unrun. No commit/push requested.
+
+## 2026-11-18 — Prepare width256 capacity experiment
+
+- Added sequential_gpt_mlx_diagnostics_width256.toml from current best accum8/lr2x
+  config. Only functional changes: d_model128→256,stable_softmax=false at user's
+  request,output gpt-mlx-basic-diagnostics-width256-01. Four layers/four heads,
+  context256,reference attention,optimizer/schedule,all statistics remain unchanged.
+- Budget remains25k optimizer updates/512M targets,20,480tokens/update,warmup250,
+  LR6e-4→6e-5,WD0.05,clip1. Parsed TOML,validated GPTConfig,tokenizer/cache budget,
+  verified exactly those three setting differences and unused output directory.
+  git diff --check passed. No training launched; provided fresh-run command.
+
+## 2026-11-18 — Analyze completed width256 experiment
+
+- Confirmed completed25k updates/512Mtargets,202metrics/202statistics rows,
+  5,273,088parameters. Data/cache/tokenizer,training/schedule,statistics and
+  generation settings identical to previous best accum8/lr2x. Model differences
+  are width128→256 AND stable_softmax true→false; effects are not isolated.
+- Finalval3.818663 vs4.314426;PPL45.5433vs74.7707(39.09%lower),best3.805525 at
+  step24250/496.64Mtokens. Wins all200matched evals after first update. Finalfixed
+  train/heldoutprobe3.674362/3.611879vs4.187645/4.104408. Trainprobe top1accuracy
+  34.6875%vs26.6797%; both train/heldout improve, no evidence of a growing
+  overfitting gap from these probes. Final maintrain minibatch3.58393 is not a
+  fixed trainset metric. Validation20k→25k improves3.854132→3.818663.
+- Clippedupdates51.00%vs81.748%,lastintervalboth100%; finalnormweightRMS
+  3.29187vs4.28461. Late(>20k) rawnoise/signalmedian8.1683vs2.9007,cosine
+  .1090vs.2558 at different trainedweights, not evidence noise caused worse loss
+  or an automatic batchsize recommendation. Saved generation remains incoherent
+  with grammaticalerrors, despite large loss gain. Observedruntime45.88vs72.70min;
+  softmax/hardware effects not separated in a controlled speed experiment.
+- Appended notebook06 section,table,4panel token-aligned comparison and findings;
+  updated notebookindex. Executed all19codecells(read-only analysis),preserved
+  earlier outputs,embedded newplot and visually inspected it. JSON/code syntax,
+  saved outputs and git diff --check verified. No training/new evaluation/config
+  launched; width256/native-softmax is current best tested setup.
+
+## 2026-11-18 — Prepare and start larger data cache
+
+- User requested scaling512M cache to~2B. Added width256_2b config:100k updates
+  and100k cosine decay,exact2.048B targets(4×512M),newcache fineweb2-rus-2b-tokens
+  andnewrun gpt-mlx-basic-diagnostics-width256-2b-01. Allmodel,optimizer,diagnostics,
+  data/tokenizer settings and absolute250-update warmup unchanged. Fresh training
+  tests larger data AND longer training with stretched decay; not a data-only
+  comparison. Existing cache/run remain intact.
+- Validated TOML/GPTConfig/tokenizer,budget2,048,000,001cached IDs=8,192,000,004
+  trainfile bytes,exactlyfour setting differences(steps,decay,cache,output),unused
+  directories and~594GiB availabledisk. Added module README prepare/train commands.
+- Started user-requested preparation with network/HF-cache escalation. Initial
+  nohup launcher did not survive tool shell and wrote no cache; relaunched via
+  persistentexecsession88519. Confirmed liveprogress>30Mtokens; preparation still
+  running at handoff(~1.2Mtokens/s observed,roughlyhalf-hourtotal). Cache is ready
+  only when manifest.json is published after bothsplits; no completed-cache claim.
+  No training launched. Next: verify manifestcounts,validation and existing512M
+  prefix after preparation; user can launch fresh training with supplied command.
+
+## 2026-11-18 — Keep terminal progress visible when narrow
+
+- Removed progress-line truncation for interactive terminals. It now writes the
+  complete status string after clearing the current row; terminal soft-wrap shows
+  all fields on multiple rows at narrow widths. Refresh still replaces the line.
+- No tests run per current session instructions.
+
+## 2026-11-18 — Add isolated μP/μTransfer proxy experiment
+
+- Research: original μTransfer remains a useful width-transfer method when the
+  model uses μP and coordinate checks pass (Yang et al., 2022,
+  https://arxiv.org/abs/2203.03466). Microsoft `mup` is PyTorch-focused and
+  archived; it does not plug into this MLX trainer. u-μP (ICLR 2025,
+  https://proceedings.iclr.cc/paper_files/paper/2025/hash/e3130a164f5c724e37271b93bc76dd28-Abstract-Conference.html)
+  is a unit-scaled variant, not required here. A recent empirical paper finds
+  AdamW weight-decay transfer can be problematic at long horizons and proposes
+  width-aware decay (https://arxiv.org/abs/2510.15262); current prototype keeps
+  decay fixed. A 2026 theoretical extension studies several other optimizers
+  (https://arxiv.org/abs/2602.20937).
+- Added opt-in `parametrization="mup"` to GPTConfig, base-width attention and
+  tied-readout scaling, fan-in-scaled hidden initialization, and matrix-only
+  width-scaled AdamW updates. Standard configs remain on the existing path.
+  Added standalone random-window proxy LR sweep and notebook 08 to compare
+  activation/update RMS across widths. Added exact command/instructions; use
+  the 512M cache and test a short width-256 continuation before using the 2B
+  cache for a MuP run.
+- The sweep and coordinate notebook were not executed: current environment lacks
+  MLX and NumPy. Python syntax, notebook JSON, and `git diff --check` passed. No
+  training launched. Implementation is an educational prototype, not yet an
+  established μTransfer result; inspect the coordinate check before interpreting
+  proxy LR candidates. Preserve existing standard checkpoints/configs.
+
+## 2026-11-18 — Run initial μP coordinate check
+
+- After explicit elevated execution restored Metal access, ran notebook 08's two
+  code cells on widths 64 and 128. Both one-step updates completed. Loss was
+  4.85278/4.85226. Embedding RMS fell 0.00355→0.00252 and attention-output
+  RMS rose 0.000107→0.000180; corresponding hidden matrix update RMS roughly
+  halved. The optimizer also currently treats 2D embedding matrices as hidden
+  matrices. This is a failed/inconclusive coordinate check, not evidence that
+  hyperparameters transfer. Corrected sweep report to preserve the base LR at
+  target width and report the separately width-scaled matrix LR. Do not run the
+  proxy sweep as a μTransfer experiment until parameter treatment is fixed and
+  the width check repeated.
+
+## 2026-11-18 — Correct embedding optimizer classification and rerun check
+
+- Made MLX optimizer updates path-aware so token/position embeddings use base
+  Adam LR, while hidden 2D matrices retain width-scaled AdamW LR. Reran
+  notebook 08 cells with Metal access at widths64/128. Embedding update RMS is
+  now 0.000299995/0.000299970 (previously 0.000150/0.000075); position
+  embeddings likewise ~0.000300. Hidden first-MLP matrix update RMS remains
+  0.000149905/0.000074909. Initial losses and activation RMS are unchanged:
+  embedding 0.003551/0.002517, first attention output 0.000107/0.000180.
+  Therefore the optimizer bug is fixed, but this initial activation check does
+  not establish μP transfer. Sweep remains unrun.
+
+## 2026-11-18 — Measure one-update functional change across widths
+
+- Ran a same-seed synthetic-batch one-update check at widths64/128/256,
+  base width32 and base LR3e-4. Initial loss 4.85278/4.85246/4.85217;
+  updated loss 4.84242/4.84373/4.84475. Embedding activation change RMS
+  0.000461/0.000459/0.000463 and first attention-output change RMS
+  0.000308/0.000305/0.000320 are roughly stable. First MLP-output change RMS
+  0.000324/0.000354/0.000465 drifts upward. Logit change RMS
+  0.003266/0.002014/0.001493 shrinks, as does initial logit RMS
+  0.008200/0.003816/0.001822. Current tied-readout scaling therefore needs
+  correction before treating the proxy LR sweep as μTransfer.
+
+## 2026-11-18 — Diagnose remaining logit-RMS drift
+
+- Expanded the eight-update coordinate check to seeds7/17/27 at widths64/128/256.
+  Full-vocabulary logit change RMS consistently decreases (~0.013→0.0093),
+  but target-token logit mean change is stable at ~0.0673–0.0676 across all
+  nine runs. Loss improvement is stable at ~0.0672–0.0676. Embedding and
+  early hidden activation changes are also comparable. The RMS drift is a
+  less task-relevant aggregate of all vocabulary logits, not evidence of a
+  shrinking target-token training response in this check. Kept the principled
+  μP output scaling; added loss-improvement and target-logit fields to the
+  coordinate report. Full proxy-to-target LR transfer remains to be measured.
+
+## 2026-11-18 — Show proxy sweep progress
+
+- Added flushed step-0 and per-evaluation train/validation/best-loss progress
+  for each LR candidate (default every100 of1000 steps). The final JSONL output
+  remains one row per candidate. Python compilation and git diff --check passed;
+  full GPU sweep remains for the user after the concurrent 2B run finishes.
+
+## 2026-11-18 — Run proxy and target μP hyperparameter search
+
+- Confirmed previous 2B standard run finished at step100,000. Updated sweep to
+  use effective batch80 via8 microbatches of10, real .bin token cache, LR×WD
+  grid, matching seed/data order, and incremental JSONL results. A three-update
+  batch80 check completed. All substantive candidates used 2,000 updates,
+  100-step warmup, cosine decay to10% peak, and validation every250 updates.
+- Initial width128 LR bracket at WD0.05: LR .0012/.0024/.0048/.0096/.0192/
+  .0384 produced best val5.151/4.864/4.795/4.703/4.850/4.816. Refinement
+  .0068/.0136 gave4.713/4.691. At LR.0136, WD0/.05/.15/.3/.6/1.2/2.4
+  gave4.695/4.691/4.637/4.609/4.564/4.609/4.721. Target width256 with
+  WD.6 and LR.0096/.0136/.0192/.0384 gave4.523/4.480/4.392/4.403;
+  WD1.2 at LR.0192 gave4.398. These files use a now-corrected extra factor
+  in μP attention scaling, so are exploratory only.
+- Corrected μP attention scale to 1/head_dim (the previous code multiplied by
+  base_width/d_model again). Multi-seed eight-update coordinate check still
+  showed similar target logit gain/loss improvement across widths. Reran the
+  decisive proxy and target LR pair under corrected code, WD.6: width128
+  LR.0136/.0192 yielded4.55346/4.58600; width256 yielded4.43446/4.35727.
+  Thus exact proxy optimum failed to transfer in this short run; target
+  preferred .0192. All corrected results saved separately. No 2B μP run.
+- The 2,000-update sweep covers40.96M train targets/candidate and reaches LR
+  floor at step2,000. It does not establish the best settings for a100k-update
+  schedule or long-run weight decay; use a longer target pilot before spending
+  the complete 2B-token budget. Syntax and git diff --check passed.
+
+## 2026-11-18 — Untie μP readout and fix width scaling
+
+- μP-only MLX GPT now uses a separate zero-initialized vocabulary readout;
+  standard GPT retains its tied head. Input embeddings keep fixed 0.02 init;
+  hidden matrix initialization scales as 0.02*sqrt(base_width/d_model).
+  μP readout and embeddings use base Adam LR, hidden matrices use the
+  width-scaled AdamW LR. Standard optimizer behavior is preserved by its
+  original apply_gradients path.
+- Added an eight-update synthetic coordinate script and ran widths64/128/256.
+  Initial first attention output RMS 0.002152/0.002249/0.002218 and first MLP
+  output RMS 0.006553/0.006367/0.006401. Eight-update loss
+  4.78455/4.78466/4.78463 from identical 4.85203 initial loss. First
+  attention-output change RMS 0.001528/0.001470/0.001572 and last residual
+  change RMS 0.009156/0.008734/0.008802. Logit change RMS still decreases
+  0.01301/0.01074/0.00931, so coordinate stability is approximate, not proven.
+- Fixed sweep's actual cache format (.bin memmap), missing optimizer import,
+  and candidate seed mismatch. A 3-update real-cache sweep smoke check ran on
+  Metal and emitted valid JSON. No full proxy sweep or target training run.
+
+## 2026-11-18 — Plot μP sweep results
+
+- Added notebook 09 with the initial LR pass, wider LR and decay brackets,
+  earlier width-256 checks, and corrected comparison at both widths.
+- Executed all four code cells with the analysis environment and embedded
+  three figures from the seven saved JSONL files. No training was run.
+
+## 2026-11-18 — Prepare matched four-width μTransfer test
+
+- Enabled μP widths below and at base width, preserving the base LR/no decay
+  treatment for embeddings and readout at the base width. Sweep output now
+  records final validation loss and evaluation histories, and distinguishes seeds
+  and run settings when skipping completed candidates.
+- Documented a matched 32/64/128/256 grid and added notebook plots for the
+  shared LR grid and validation histories. The full grid was left for launch.
+- Verified two Metal updates each at widths 32 and 64 on the real cache.
+  Both runs saved final loss and evaluation histories. Syntax checks passed.
+
+- Broadened the documented first-pass width grid to seven logarithmically
+  spaced LRs from 1e-4 through 1e-1. Refine and repeat seeds near the observed
+  minima after the broad pass. No training launched.
+- Switched the first-pass grid to exact powers of two from 2^-13 to 2^-3
+  (44 candidates), with a dedicated JSONL path and matching notebook ticks.
+  Verified the documented rates and notebook syntax. No training launched.
+- Added sweep training throughput per evaluation interval and per candidate.
+  Rates count targets across all microbatches and exclude validation time.
+  Python compilation passed.
+
+- Plotted all 44 completed four-width sweep candidates in notebook 09. Saved
+  LR response curves, validation histories at the width-32 choice, and
+  throughput for 41 timed candidates. Executed the plotting cell on saved data.
+
+- Prepared a fresh width-256 μP run for the existing 2.048B-token cache.
+  Uses base LR 2^-7, zero decay, and the standard run's batch, warmup,
+  schedule length and diagnostics. Checked TOML, cache budget and byte size,
+  tokenizer path and fresh output path. No full training launched.
+
+- Fixed the shared terminal progress display to wrap explicitly at the current
+  width and erase all rows of its previous status before writing the next one.
+  Added a resize regression check covering narrow to wide and back. All six
+  progress tests passed. Redirected output retains sparse plain-text updates.
+
+- Prepared the training configs, μP sweep, analysis notebooks, and terminal
+  progress fix for commit. Earlier checks and experimental limits are recorded
+  above. The user launched the width-256 μP run, and its results remain to be
+  analyzed when training finishes.

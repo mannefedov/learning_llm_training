@@ -11,7 +11,7 @@ import math
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
-from mlx.utils import tree_flatten, tree_map
+from mlx.utils import tree_flatten, tree_map, tree_map_with_path
 
 from llm_training.models.gpt_mlx import GPT
 from .data import get_batch, sequential_batch, batches_per_epoch
@@ -105,16 +105,53 @@ def choose_device(name: str):
 
 class MatrixAdamW(optim.AdamW):
     """Match PyTorch's matrix-only decay and bias-corrected AdamW updates."""
+    def __init__(self, *args, matrix_lr_multiplier=1.0, mup=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.matrix_lr_multiplier = matrix_lr_multiplier
+        self.mup = mup
+
+    def apply_gradients(self, gradients, parameters):
+        if not self.mup:
+            return super().apply_gradients(gradients, parameters)
+        if not self._initialized:
+            self.init(gradients)
+        for name, scheduler in self._schedulers.items():
+            self.state[name] = scheduler(self.step)
+        self.state["step"] = self.step + 1
+
+        def apply(path, gradient, parameter, state):
+            if path in ("token_embedding.weight", "position_embedding.weight", "lm_head.weight"):
+                # Embeddings and the independent μP readout keep the base LR.
+                return optim.Adam.apply_single(self, gradient, parameter, state)
+            return self.apply_single(gradient, parameter, state)
+
+        return tree_map_with_path(apply, gradients, parameters, self.state)
+
     def apply_single(self, gradient, parameter, state):
         if parameter.ndim < 2:
             # Adam performs the same update without the decoupled decay term.
             return optim.Adam.apply_single(self, gradient, parameter, state)
-        return super().apply_single(gradient, parameter, state)
+        if self.matrix_lr_multiplier == 1.0:
+            return super().apply_single(gradient, parameter, state)
+        # Scale the adaptive gradient step and the decoupled matrix decay
+        # together, matching a matrix-specific effective learning rate.
+        lr = self.learning_rate.astype(gradient.dtype) * self.matrix_lr_multiplier
+        b1, b2 = self.betas
+        state["m"] = b1 * state["m"] + (1 - b1) * gradient
+        state["v"] = b2 * state["v"] + (1 - b2) * mx.square(gradient)
+        step = self.step
+        c1 = (lr / (1 - b1 ** step)).astype(gradient.dtype)
+        c2 = mx.rsqrt(1 - b2 ** step).astype(gradient.dtype)
+        update = c1 * state["m"] / (mx.sqrt(state["v"]) * c2 + self.eps)
+        return parameter * (1 - lr * self.weight_decay) - update
 
 
-def make_optimizer(config: TrainConfig):
+def make_optimizer(config: TrainConfig, model_config=None):
+    mup = model_config is not None and model_config.parametrization == "mup"
+    multiplier = model_config.mup_base_width / model_config.d_model if mup else 1.0
     return MatrixAdamW(learning_rate=config.learning_rate, betas=[0.9, 0.95],
-                       weight_decay=config.weight_decay, bias_correction=True)
+                       weight_decay=config.weight_decay, bias_correction=True,
+                       matrix_lr_multiplier=multiplier, mup=mup)
 
 
 def make_loss_and_grad(model: GPT, compile_step: bool = False):
@@ -175,7 +212,7 @@ def train(model: GPT, train_tokens, val_tokens, config: TrainConfig,
     model.train()
     if not 0 <= start_step <= config.steps:
         raise ValueError("start_step must be within the training budget")
-    optimizer = make_optimizer(config) if optimizer is None else optimizer
+    optimizer = make_optimizer(config, model.config) if optimizer is None else optimizer
     loss_and_grad = make_loss_and_grad(model, config.compile_step)
     generator = random.Random(config.seed)
     if batch_rng_state is not None:

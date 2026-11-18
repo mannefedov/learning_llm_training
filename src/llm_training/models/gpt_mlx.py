@@ -55,12 +55,23 @@ class GPT(nn.Module):
         self.position_embedding = nn.Embedding(config.context_length, config.d_model)
         self.blocks = [Block(config, i) for i in range(config.n_layers)]
         self.final_norm = nn.LayerNorm(config.d_model, eps=1e-5)
+        if config.parametrization == "mup":
+            self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
         def initialize(path, parameter):
             if parameter.ndim >= 2:
                 # Smaller residual projections match gpt.py initialization.
                 residual = path.endswith(("attention.proj.weight", "mlp.layers.2.weight"))
                 std = 0.02 / math.sqrt(2 * config.n_layers) if residual else 0.02
+                if config.parametrization == "mup":
+                    # μP uses an independent, zero-initialized readout. Input
+                    # embeddings retain their fixed scale across widths.
+                    if path == "lm_head.weight":
+                        return mx.zeros_like(parameter)
+                    std = (0.02 if path.endswith(("token_embedding.weight", "position_embedding.weight"))
+                           else 0.02 * math.sqrt(config.mup_base_width / config.d_model))
+                    if residual:
+                        std /= math.sqrt(2 * config.n_layers)
                 return mx.random.normal(parameter.shape) * std
             return mx.zeros_like(parameter) if path.endswith("bias") else mx.ones_like(parameter)
 
@@ -78,11 +89,13 @@ class GPT(nn.Module):
             else:
                 x = block(x, activation_observer=lambda name, value: activation_observer(
                     f"blocks.{index}.{name}", value))
-        # Use the embedding matrix directly so it is stored and optimized only once.
         x = self.final_norm(x)
         if activation_observer is not None:
             activation_observer("final_norm", x)
-        logits = self.token_embedding.as_linear(x)
+        if self.config.parametrization == "mup":
+            logits = self.lm_head(x) * (self.config.mup_base_width / self.config.d_model)
+        else:
+            logits = self.token_embedding.as_linear(x)
         loss = None
         if targets is not None:
             if targets.shape != input_ids.shape:

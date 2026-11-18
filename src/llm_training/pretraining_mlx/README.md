@@ -217,6 +217,21 @@ throughput and preparation budgets count all microbatches. Resume checkpoints ar
 written only after complete optimizer updates and require the same accumulation
 factor; old checkpoints imply factor 1. Compare runs by tokens, not raw step number.
 
+### Larger-data width-256 experiment
+
+Prepare the larger cache, then start a fresh run:
+
+```sh
+.venv/bin/python -m llm_training.pretraining_mlx.prepare \
+  --config configs/pretraining/sequential_gpt_mlx_diagnostics_width256_2b.toml
+.venv/bin/python -m llm_training.pretraining_mlx \
+  --config configs/pretraining/sequential_gpt_mlx_diagnostics_width256_2b.toml
+```
+
+Wait for `Cache ready` before training. The cache is
+`artifacts/data/fineweb2-rus-2b-tokens`; results go under
+`artifacts/pretraining/gpt-mlx-basic-diagnostics-width256-2b-01`.
+
 ## Compile forward/backward
 
 ```toml
@@ -326,7 +341,9 @@ speed alone, keep the config settings and change only `attention_backend` to
 
 Progress shows `tok/s`: average training tokens per second since this start/resume,
 including validation, sampling, checkpointing, and compilation time where applicable.
-`train` tracks the latest batch each step; the terminal refreshes once per second.
+`train` tracks the latest batch each step. The status refreshes in place about
+once per second in a terminal and wraps at the current width. Redirected
+output adds a plain status line about every 30 seconds.
 `val` and CSV loss rows update at `eval_every`.
 `metrics.csv` records `tokens_per_second`, `tokens_processed`, and `elapsed_seconds`
 at each loss evaluation. Each update counts
