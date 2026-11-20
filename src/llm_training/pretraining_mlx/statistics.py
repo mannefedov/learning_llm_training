@@ -170,14 +170,22 @@ class TrainingStatistics:
                     x, y = get_batch(tokens, self.training.batch_size,
                                      self.model.config.context_length, generator)
                     if name == "train" and batch_index == 0 and (
-                            self.settings.activations or self.settings.logits):
+                            self.settings.activations or self.settings.logits or self.model.config.num_experts):
                         activations = {}
+                        routing = {}
 
                         def observe(name, array):
                             activations[name] = distribution_summary(array)
 
-                        logits, loss = self.model(x, y, activation_observer=(
-                            observe if self.settings.activations else None))
+                        logits, loss = self.model(
+                            x, y, activation_observer=observe if self.settings.activations else None,
+                            routing_observer=lambda layer, values: routing.update({layer: values}))
+                        if routing:
+                            mx.eval(routing)
+                            results["routing"] = {
+                                layer: {key: value.tolist() for key, value in values.items()}
+                                for layer, values in routing.items()
+                            }
                         if self.settings.activations:
                             mx.eval(activations)
                             results["activations"] = {key: scalars(value) for key, value in activations.items()}

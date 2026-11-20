@@ -18,6 +18,22 @@ related topics. The goal is understanding and interview preparation.
 
 ## Human-facing and agent-facing writing
 
+- State mechanisms plainly. Avoid artificial contrasts such as "X, not Y"
+  when Y is an unprompted misconception. Use contrasts for actual corrections
+  or comparisons relevant to the reader's question.
+- Keep tutorial prerequisites and depth consistent. For current model tutorials,
+  assume familiarity with linear layers, activations and backpropagation;
+  explain unfamiliar mechanisms such as MoE routing, dispatch, combination and
+  routing gradients in detail. Adjust this baseline when the user asks.
+- Put notebook code examples in executable code cells rather than fenced
+  Markdown pseudocode. Use short Markdown cells for context and inline comments
+  beside the code to explain the computational flow.
+- Build notebook explanations from bite-size logical steps, showing each new
+  operation's result in its own cell with native Jupyter expression output.
+  Keep outputs close to the operation they explain; avoid long cells followed
+  by several shape prints. Use inline comments for the computational flow.
+  Once the pieces are established, combine them into larger cells, functions
+  and classes. Prints are useful for loops and progress reporting.
 - READMEs and user instructions are for the human reader: keep them short,
   readable, and easy to act on. Lead with prerequisites, exact commands, and
   where outputs go. Make the full workflow and each individual stage obvious.

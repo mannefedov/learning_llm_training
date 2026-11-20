@@ -36,6 +36,8 @@ class TrainConfig:
     warmup_steps: int = 0
     min_learning_rate: float = 3e-5
     lr_decay_steps: int | None = None
+    lr_decay_start_step: int | None = None
+    lr_decay: bool = True
 
     def __post_init__(self):
         if (not isinstance(self.gradient_accumulation_steps, int)
@@ -44,14 +46,16 @@ class TrainConfig:
             raise ValueError("gradient_accumulation_steps must be a positive integer")
         if not isinstance(self.compile_step, bool):
             raise ValueError("compile_step must be a boolean")
+        if not isinstance(self.lr_decay, bool):
+            raise ValueError("lr_decay must be a boolean")
         if self.sampling not in ("random", "sequential"):
             raise ValueError("sampling must be random or sequential")
         if min(self.steps, self.batch_size, self.eval_every, self.eval_batches) < 1:
             raise ValueError("Training steps and batch counts must be positive")
         if self.learning_rate <= 0 or self.grad_clip <= 0 or self.weight_decay < 0:
             raise ValueError("Invalid learning rate, gradient clip, or weight decay")
-        if self.lr_schedule not in ("constant", "cosine"):
-            raise ValueError("lr_schedule must be constant or cosine")
+        if self.lr_schedule not in ("constant", "cosine", "staircase"):
+            raise ValueError("lr_schedule must be constant, cosine or staircase")
         if (not isinstance(self.warmup_steps, int) or isinstance(self.warmup_steps, bool)
                 or self.warmup_steps < 0):
             raise ValueError("warmup_steps must be a nonnegative integer")
@@ -59,13 +63,18 @@ class TrainConfig:
                 not isinstance(self.lr_decay_steps, int) or isinstance(self.lr_decay_steps, bool)
                 or self.lr_decay_steps < 2):
             raise ValueError("lr_decay_steps must be an integer >= 2")
+        if self.lr_decay_start_step is not None and (
+                type(self.lr_decay_start_step) is not int or self.lr_decay_start_step < 1
+                or self.lr_schedule not in ("cosine", "staircase")
+                or self.lr_decay_start_step < self.warmup_steps):
+            raise ValueError("lr_decay_start_step requires cosine/staircase decay and must follow warmup")
         if self.lr_schedule == "constant":
             if self.warmup_steps or self.lr_decay_steps is not None:
-                raise ValueError("Warmup and decay steps require lr_schedule = cosine")
+                raise ValueError("Warmup and decay steps require a decay schedule")
         else:
             end = self.lr_decay_steps if self.lr_decay_steps is not None else self.steps
-            if end <= max(1, self.warmup_steps):
-                raise ValueError("Cosine decay must end after warmup and the first update")
+            if self.lr_decay and end <= (self.lr_decay_start_step or max(1, self.warmup_steps)):
+                raise ValueError("Decay must end after warmup and the first update")
             if not (math.isfinite(self.learning_rate)
                     and 0 <= self.min_learning_rate <= self.learning_rate):
                 raise ValueError("Require finite 0 <= min_learning_rate <= learning_rate")
@@ -78,16 +87,27 @@ class TrainConfig:
 def learning_rate_at_step(config: TrainConfig, step: int) -> float:
     """LR for a one-based optimizer update; resume uses the absolute saved step.
 
-    Linear warmup reaches the peak on warmup_steps. Cosine then reaches its
-    floor on lr_decay_steps (default: training.steps) and stays there.
+    Linear warmup reaches the peak on warmup_steps. An explicit decay start
+    holds that peak until lr_decay_start_step (WSD). Decay reaches its floor
+    on lr_decay_steps (default: training.steps) and stays there.
+    With lr_decay=False, hold the peak indefinitely after warmup.
     Reference: https://github.com/karpathy/build-nanogpt/blob/master/train_gpt2.py
     """
     if config.lr_schedule == "constant":
         return config.learning_rate
     if step <= config.warmup_steps and config.warmup_steps:
         return config.learning_rate * step / config.warmup_steps
-    start = max(1, config.warmup_steps)
+    if not config.lr_decay:
+        return config.learning_rate
+    start = config.lr_decay_start_step or max(1, config.warmup_steps)
     end = config.lr_decay_steps if config.lr_decay_steps is not None else config.steps
+    if config.lr_schedule == "staircase":
+        if step >= end:
+            return config.min_learning_rate
+        # Four holds of approximately equal duration, then the floor at the endpoint.
+        stage = min(3, max(0, (step - start) * 4 // (end - start + 1)))
+        multiplier = (1.0, 0.5, 0.25, 0.1)[stage]
+        return config.min_learning_rate + multiplier * (config.learning_rate - config.min_learning_rate)
     fraction = min(1.0, max(0.0, (step - start) / (end - start)))
     cosine = 0.5 * (1.0 + math.cos(math.pi * fraction))
     return config.min_learning_rate + cosine * (config.learning_rate - config.min_learning_rate)
@@ -155,7 +175,7 @@ def make_optimizer(config: TrainConfig, model_config=None):
 
 
 def make_loss_and_grad(model: GPT, compile_step: bool = False):
-    function = nn.value_and_grad(model, lambda x, y: model(x, y)[1])
+    function = nn.value_and_grad(model, lambda x, y: model(x, y, include_aux_loss=True)[1])
     if compile_step:
         # Include both forward and backward. Explicit state inputs/outputs keep
         # current weights visible across optimizer updates and avoid stale captures.
@@ -205,13 +225,14 @@ def train(model: GPT, train_tokens, val_tokens, config: TrainConfig,
           record_metrics: Callable[..., None] | None = None,
           record_samples: Callable[[int], None] | None = None, *,
           optimizer=None, start_step: int = 0, batch_rng_state=None,
-          record_checkpoint=None, statistics=None):
+          record_checkpoint=None, statistics=None, data_start_step: int = 0,
+          tokens_before_start: int | None = None):
     epoch_steps = (batches_per_epoch(train_tokens, config.effective_batch_size, model.config.context_length)
                    if config.sampling == "sequential" else None)
     mx.set_default_device(choose_device(config.device))
     model.train()
-    if not 0 <= start_step <= config.steps:
-        raise ValueError("start_step must be within the training budget")
+    if not 0 <= data_start_step <= start_step <= config.steps:
+        raise ValueError("Require 0 <= data_start_step <= start_step <= training budget")
     optimizer = make_optimizer(config, model.config) if optimizer is None else optimizer
     loss_and_grad = make_loss_and_grad(model, config.compile_step)
     generator = random.Random(config.seed)
@@ -219,8 +240,10 @@ def train(model: GPT, train_tokens, val_tokens, config: TrainConfig,
         generator.setstate(batch_rng_state)
     count = sum(p.size for _, p in tree_flatten(model.parameters()))
     print(f"Device: {mx.default_device()}; parameters: {count:,}")
-    with TrainingProgress(config.steps, start_step=start_step, steps_per_epoch=epoch_steps,
-                          tokens_per_step=config.effective_batch_size * model.config.context_length) as progress:
+    with TrainingProgress(config.steps, start_step=start_step,
+                          steps_per_epoch=epoch_steps if not data_start_step else None,
+                          tokens_per_step=config.effective_batch_size * model.config.context_length,
+                          parameter_count=count, tokens_before_start=tokens_before_start) as progress:
         val_loss = evaluate(model, val_tokens, config)
         progress.update(start_step, val_loss=val_loss)
         if record_metrics is not None:
@@ -232,7 +255,8 @@ def train(model: GPT, train_tokens, val_tokens, config: TrainConfig,
             statistics.record(start_step)
         for step in range(start_step + 1, config.steps + 1):
             if config.sampling == "sequential":
-                x, y = sequential_batch(train_tokens, config.effective_batch_size, model.config.context_length, step - 1)
+                x, y = sequential_batch(train_tokens, config.effective_batch_size,
+                                        model.config.context_length, step - data_start_step - 1)
             else:
                 x, y = get_batch(train_tokens, config.effective_batch_size, model.config.context_length, generator)
             train_loss, gradients = accumulate_gradients(loss_and_grad, x, y, config.batch_size)

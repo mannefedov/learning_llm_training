@@ -81,7 +81,8 @@ def train(
     )
     generator = torch.Generator().manual_seed(config.seed)
     print(f"Device: {device}; parameters: {sum(p.numel() for p in parameters):,}")
-    with TrainingProgress(config.steps, tokens_per_step=config.batch_size * model.config.context_length) as progress:
+    with TrainingProgress(config.steps, tokens_per_step=config.batch_size * model.config.context_length,
+                          parameter_count=sum(p.numel() for p in parameters)) as progress:
         val_loss = evaluate(model, val_tokens, config)
         progress.update(0, val_loss=val_loss)
         if record_metrics is not None:

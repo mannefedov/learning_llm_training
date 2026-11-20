@@ -16,10 +16,17 @@ def masked_attention(q, k, v, allowed, *, stable=False):
     return weights @ v
 
 
-def masked_attention_scaled(q, k, v, allowed, *, scale, stable=False):
+def masked_attention_scaled(q, k, v, allowed, *, scale, stable=False, sink_logits=None):
     scores = (q @ k.swapaxes(-2, -1)) * scale
     scores = mx.where(allowed, scores, -float("inf"))
+    if sink_logits is not None:
+        # A per-head softmax entry with no value contribution. It is always
+        # visible, including for the first token and at sliding-window edges.
+        sink = mx.broadcast_to(sink_logits[None, :, None, None], (*scores.shape[:-1], 1))
+        scores = mx.concatenate((scores, sink), axis=-1)
     weights = stable_softmax(scores) if stable else mx.softmax(scores, axis=-1)
+    if sink_logits is not None:
+        weights = weights[..., :-1]
     return weights @ v
 
 
@@ -29,6 +36,9 @@ class CausalSelfAttention(nn.Module):
         self.n_heads = config.n_heads
         self.backend = config.attention_backend
         self.stable_softmax = config.stable_softmax
+        self.use_rope = config.position_encoding == "rope"
+        if config.attention_sinks:
+            self.sink_logits = mx.zeros((config.n_heads,))
         self.attention_scale = (1 / (config.d_model // config.n_heads)
                                 if config.parametrization == "mup"
                                 else 1 / math.sqrt(config.d_model // config.n_heads))
@@ -44,7 +54,8 @@ class CausalSelfAttention(nn.Module):
         positions = mx.arange(q.shape[2])
         return masked_attention_scaled(q, k, v, positions[:, None] >= positions[None, :],
                                        scale=self.attention_scale,
-                                       stable=self.stable_softmax)
+                                       stable=self.stable_softmax,
+                                       sink_logits=getattr(self, "sink_logits", None))
 
     def __call__(self, x):
         batch, length, width = x.shape
@@ -52,6 +63,10 @@ class CausalSelfAttention(nn.Module):
         q, k, v = mx.split(self.qkv(x), 3, axis=-1)
         q, k, v = [a.reshape(batch, length, self.n_heads, head_size).transpose(0, 2, 1, 3)
                    for a in (q, k, v)]
+        if self.use_rope:
+            # Use the same adjacent channel pairs as the PyTorch implementation.
+            q = mx.fast.rope(q, head_size, traditional=True, base=10000.0, scale=1.0, offset=0)
+            k = mx.fast.rope(k, head_size, traditional=True, base=10000.0, scale=1.0, offset=0)
         attended = self.attend(q, k, v)
         attended = attended.transpose(0, 2, 1, 3).reshape(batch, length, width)
         return self.proj(attended)
@@ -84,11 +99,15 @@ class SlidingWindowAttention(CausalSelfAttention):
             tiles.append(masked_attention_scaled(q[:, :, start:end], k[:, :, key_start:end],
                                                  v[:, :, key_start:end], allowed,
                                                  scale=self.attention_scale,
-                                                 stable=self.stable_softmax))
+                                                 stable=self.stable_softmax,
+                                                 sink_logits=getattr(self, "sink_logits", None)))
         return mx.concatenate(tiles, axis=2)
 
 
 def build_attention(config: GPTConfig, layer_index: int):
+    if config.attention_architecture == "mla":
+        from .mla_mlx import MultiHeadLatentAttention
+        return MultiHeadLatentAttention(config)
     kind = config.attention_type(layer_index)
     if kind == "full":
         return CausalSelfAttention(config)

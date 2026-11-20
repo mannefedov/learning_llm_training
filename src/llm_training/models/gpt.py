@@ -18,6 +18,8 @@ from .attention import CausalSelfAttention, build_attention
 class Block(nn.Module):
     def __init__(self, config: GPTConfig, layer_index: int = 0):
         super().__init__()
+        if config.attention_architecture == "mla":
+            raise ValueError("MLA currently requires the MLX backend")
         self.attention_norm = nn.LayerNorm(config.d_model)
         self.attention = build_attention(config, layer_index)
         self.mlp_norm = nn.LayerNorm(config.d_model)
@@ -35,11 +37,14 @@ class Block(nn.Module):
 class GPT(nn.Module):
     def __init__(self, config: GPTConfig):
         super().__init__()
+        if config.num_experts:
+            raise ValueError("MoE currently requires the MLX backend")
         if config.attention_backend != "reference":
             raise ValueError("Fused MLX attention requires the MLX training entry point")
         self.config = config
         self.token_embedding = nn.Embedding(config.vocab_size, config.d_model)
-        self.position_embedding = nn.Embedding(config.context_length, config.d_model)
+        if config.position_encoding == "learned":
+            self.position_embedding = nn.Embedding(config.context_length, config.d_model)
         self.blocks = nn.ModuleList([Block(config, i) for i in range(config.n_layers)])
         self.final_norm = nn.LayerNorm(config.d_model)
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
@@ -62,8 +67,10 @@ class GPT(nn.Module):
     def forward(self, input_ids: torch.Tensor, targets: torch.Tensor | None = None):
         if input_ids.ndim != 2 or not 1 <= input_ids.size(1) <= self.config.context_length:
             raise ValueError("input_ids must have shape (batch, time) within context_length")
-        positions = torch.arange(input_ids.size(1), device=input_ids.device)
-        x = self.token_embedding(input_ids) + self.position_embedding(positions)
+        x = self.token_embedding(input_ids)
+        if self.config.position_encoding == "learned":
+            positions = torch.arange(input_ids.size(1), device=input_ids.device)
+            x = x + self.position_embedding(positions)
         for block in self.blocks:
             x = block(x)
         logits = self.lm_head(self.final_norm(x))

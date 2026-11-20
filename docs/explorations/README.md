@@ -1,8 +1,30 @@
 # Explore later
 
-2026-11-17: focus current experiments on fitting a basic 256-token full-attention
-model and collecting training diagnostics. Keep 4K context and attention-kernel
-optimization parked until the basic training behavior is understood.
+2026-11-19: focus on RoPE and architecture comparisons before returning to
+N/D scaling laws. The all-RoPE pilot config is ready. Follow it with a
+RoPE/NoPE layer comparison, then explore further architecture options.
+
+## IsoFLOP scaling laws for model size and training data
+
+Parked 2026-11-19 until after the positional encoding and architecture experiments.
+Estimate loss and the best N/D allocation at a larger training compute budget.
+Start with three compute budgets and four widths (32/64/128/256), assigning
+more tokens to smaller models using estimated training FLOPs per token.
+Bracket each loss minimum, fit the compute-optimal trend, and validate one
+larger prediction. Add width 512 if the minima lie beyond the initial range.
+[Chinchilla, method 2](https://arxiv.org/abs/2203.15556)
+
+## Slicing and dicing MOE
+Resumed 2026-11-19 with a tiny top-2 MoE implementation and notebook 12.
+First inspect expert usage and loss, then compare expert count, hidden width,
+shared experts and auxiliary-loss-free balancing at matched budgets.
+
+Manually added on 2026-11-18. 
+I found this twit - https://x.com/margs_li/status/2056355079188627862 with a link to a paper
+https://arxiv.org/abs/2605.11689
+They training 2k MOE models to try to understand what are optimal expert counts, granularity, shared experts, load balancing etc. 
+When we get to training MOE models, it would be one of the papers to start exploring scaling laws and hyperparameters. 
+
 
 ## Fused attention backward on MLX
 
@@ -15,8 +37,8 @@ small gains with NAX16, but they did not establish a practical training gain.
 Strict attention and initial model-gradient checks passed; multi-update parameter
 identity failed even for repeated native controls. Long-run quality is untested.
 
-Resume from [the experiment instructions](../../experiments/mlx_swa/README.md):
-patch order, switches, tests and source revision are recorded there. Next compare
+The retired `experiments/mlx_swa/README.md` at Git revision `a22d1a8` records
+patch order, switches, tests and source revision. Next compare
 matched real training runs (including reporting/evaluation overhead), then use
 GPU counters to investigate register spills, occupancy, reuse and pipelining.
 Raw results and intermediate reports are local-only under
@@ -24,7 +46,7 @@ Raw results and intermediate reports are local-only under
 
 ## Long-document continued pretraining
 
-Parked 2026-11-16: initialize from the current 4K model after its run finishes,
+Parked 2026-11-16: initialize from an archived 4K checkpoint,
 then train on 4K windows drawn entirely from individual long documents. Keep
 model dimensions and tokenizer unchanged. Each row stays within one document,
 so this experiment needs no cross-document attention mask.
@@ -66,3 +88,13 @@ Next: add an opt-in implementation, check gradients and optimizer/checkpoint
 state, then compare matched short training runs for throughput, memory, loss,
 and stability. Component timings do not establish whole-training speed or quality.
 No production precision change has been made.
+
+## Mixed RoPE and NoPE layers
+
+Resumed 2026-11-19 as a follow-up to the ready all-RoPE pilot.
+
+After comparing all-RoPE with learned positions, test selected layers with
+no explicit position encoding. Keep attention windows and LR fixed for the
+first comparison so the layer pattern is the main change. Follow up with a
+longer-context evaluation if the short-context losses are close.
+[SmolLM3 example](https://huggingface.co/blog/smollm3)

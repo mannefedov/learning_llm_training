@@ -94,6 +94,19 @@ class PretrainingTests(unittest.TestCase):
         self.assertAlmostEqual(learning_rate_at_step(no_warmup, 1), 3e-4)
         self.assertAlmostEqual(learning_rate_at_step(no_warmup, 3), 3e-5)
         self.assertEqual(learning_rate_at_step(TrainConfig(), 500), 3e-4)
+        wsd = TrainConfig(steps=10, lr_schedule="cosine", warmup_steps=2,
+                          lr_decay_start_step=6, learning_rate=0.01, min_learning_rate=0.001)
+        for step, expected in [(0, 0), (1, .005), (2, .01), (4, .01),
+                               (6, .01), (8, .0055), (10, .001), (11, .001)]:
+            self.assertAlmostEqual(learning_rate_at_step(wsd, step), expected)
+        with self.assertRaises(ValueError):
+            TrainConfig(lr_schedule="cosine", warmup_steps=4, lr_decay_start_step=2)
+        from dataclasses import replace
+        stable = replace(wsd, lr_decay=False)
+        for step, expected in [(1, .005), (2, .01), (6, .01), (10, .01), (100, .01)]:
+            self.assertAlmostEqual(learning_rate_at_step(stable, step), expected)
+        with self.assertRaises(ValueError):
+            TrainConfig(lr_decay="false")
         for fields in [dict(lr_schedule="unknown"), dict(warmup_steps=1),
                        dict(lr_schedule="cosine", warmup_steps=-1),
                        dict(lr_schedule="cosine", warmup_steps=True),
@@ -197,7 +210,7 @@ class PretrainingTests(unittest.TestCase):
             generated = model.generate(mx.array([[1] * 8]), max_new_tokens=3)
             self.assertEqual(generated.shape, (1, 11))
             samples = (checkpoint_path.parent / "samples.txt").read_text()
-            self.assertEqual(samples.count("=== step="), 3)
+            self.assertEqual(samples.count("=== step="), 12)
             for step in (0, 1, 2):
                 self.assertIn(f"=== step={step} ", samples)
             self.assertTrue(metadata["generation_config"]["enabled"])
@@ -336,7 +349,7 @@ class PretrainingTests(unittest.TestCase):
         text = generate_text(model, tokenizer, "hello", max_new_tokens=10, eos_id=eos)
         self.assertEqual(text, "hello<|endoftext|>")
         model.generate.assert_called_once()
-        for kwargs in ({"prompt": ""}, {"temperature": 0}, {"temperature": float("nan")},
+        for kwargs in ({"prompt": ""}, {"temperature": -1}, {"temperature": float("nan")},
                        {"max_new_tokens": -1}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 generate_text(model, tokenizer, **({"prompt": "hello"} | kwargs))
@@ -360,7 +373,10 @@ class PretrainingTests(unittest.TestCase):
                 self.assertTrue(model.training)
                 self.assertTrue(mx.array_equal(mx.random.uniform(shape=(4,)), expected).item())
                 text = (root / "samples.txt").read_text()
-                self.assertEqual(text.count("=== step="), 3)
+                self.assertEqual(text.count("=== step="), 12)
+                self.assertEqual(text.count("decoding=greedy"), 3)
+                for temperature in (0.0, 0.3, 0.5, 0.8):
+                    self.assertEqual(text.count(f"temperature={temperature} "), 3)
                 for step in (0, 3, 5):
                     self.assertIn(f"=== step={step} ", text)
                 with patch("llm_training.pretraining_mlx.sampling.generate_text",
@@ -369,9 +385,37 @@ class PretrainingTests(unittest.TestCase):
                         record(3)
                 self.assertTrue(model.training)
                 self.assertEqual((root / "samples.txt").read_text(), text)
-        for kwargs in ({"every": 0}, {"prompts": []}, {"temperature": float("nan")}):
+        self.assertEqual(GenerationConfig(temperature=.8).decoding_temperatures, [.8])
+        self.assertEqual(GenerationConfig(temperatures=[0]).decoding_temperatures, [0])
+        for kwargs in ({"every": 0}, {"prompts": []}, {"temperature": float("nan")},
+                       {"temperatures": []}, {"temperatures": [-.1]},
+                       {"temperatures": [float("inf")]}, {"temperatures": [True]},
+                       {"temperatures": "0.5"}, {"temperature": .8, "temperatures": [.5]}):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 GenerationConfig(**kwargs)
+
+    def test_greedy_generation_matches_argmax_and_preserves_rng(self):
+        from llm_training.pretraining_mlx.generate import generate_text
+        tokenizer = train_byte_level_bpe(["hello"], vocab_size=300, show_progress=False)
+        model = GPT(GPTConfig(vocab_size=tokenizer.get_vocab_size(), context_length=4,
+                              n_layers=1, n_heads=1, d_model=8))
+        mx.eval(model.parameters())
+        ids = mx.array([tokenizer.encode("hello", add_special_tokens=False).ids])
+        expected = ids
+        for _ in range(3):
+            logits, _ = model(expected[:, -4:])
+            expected = mx.concatenate((expected, mx.argmax(logits[:, -1], axis=-1)[:, None]), axis=1)
+        mx.random.seed(19)
+        rng_expected = mx.random.uniform(shape=(4,))
+        mx.eval(rng_expected)
+        mx.random.seed(19)
+        actual = model.generate(ids, 3, temperature=0)
+        self.assertTrue(mx.array_equal(actual, expected).item())
+        self.assertTrue(mx.array_equal(mx.random.uniform(shape=(4,)), rng_expected).item())
+        a = generate_text(model, tokenizer, "hello", max_new_tokens=3, temperature=0, seed=1)
+        b = generate_text(model, tokenizer, "hello", max_new_tokens=3, temperature=0, seed=99)
+        self.assertEqual(a, b)
+        self.assertEqual(a, tokenizer.decode(expected[0].tolist(), skip_special_tokens=False))
 
     def test_evaluation_keeps_training_rng_and_mode(self):
         from llm_training.pretraining_mlx.train import evaluate

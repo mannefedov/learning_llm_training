@@ -1,0 +1,76 @@
+# Tiny trainable MoE: 2 layers, four experts per layer, two selected per token.
+[data]
+dataset_id = "HuggingFaceFW/fineweb-2"
+subset = "rus_Cyrl"
+train_split = "train"
+val_split = "test"
+# Upper limit: preparation stops earlier when the token budget is full.
+train_documents = 20000000
+val_documents = 100
+seed = 42
+shuffle_buffer_size = 0
+# revision = "<dataset commit SHA>"
+
+[tokenizer]
+path = "artifacts/tokenization/fineweb2-rus-bpe-8k-02/tokenizer.json"
+eos_token = "<|endoftext|>"
+
+[model]
+position_encoding = "rope"
+parametrization = "standard"
+num_experts = 4
+experts_per_token = 2
+expert_hidden_dim = 128
+moe_aux_loss_coef = 0.01
+attention_backend = "reference"
+stable_softmax = false
+# Vocabulary size comes from the actual tokenizer.
+context_length = 256
+n_layers = 2
+n_heads = 4
+d_model = 64
+
+[training]
+compile_step = true
+lr_schedule = "cosine"
+lr_decay = false  # Warmup then stable LR; anneal in a later branch.
+warmup_steps = 250
+min_learning_rate = 0.0001
+lr_decay_steps = 7325
+sampling = "sequential"
+steps = 7325
+batch_size = 16
+gradient_accumulation_steps = 5  # 20,480 tokens per optimizer update.
+learning_rate = 0.001
+weight_decay = 0.0  # Match the four-width sweep.
+grad_clip = 1.0
+eval_every = 125
+eval_batches = 4
+seed = 42
+device = "gpu"
+
+[statistics]
+every = 125
+probe_batches = 2
+activations = true
+logits = true
+gradient_noise_batches = 0
+gradient_noise_every = 500
+
+[checkpoint]
+every = 125
+keep = 1
+
+[generation]
+enabled = true
+every = 125
+prompts = ["Сегодня утром я", "В Москве сегодня", "Чтобы приготовить суп,", "Учёные обнаружили", "— Ты куда"]
+max_new_tokens = 30
+temperatures = [0.0, 0.3, 0.5, 0.8]
+seed = 42
+
+[cache]
+directory = "artifacts/data/fineweb2-rus-2b-tokens"
+
+[output]
+directory = "artifacts/pretraining/gpt-mlx-moe-width64-150m-01"

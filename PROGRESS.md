@@ -1605,3 +1605,438 @@ Update this log before pushing work.
   progress fix for commit. Earlier checks and experimental limits are recorded
   above. The user launched the width-256 μP run, and its results remain to be
   analyzed when training finishes.
+
+## 2026-11-18 — Retire older experiments before architecture work
+
+- Consolidated matched loss comparisons, the standard 2B reference, and lessons
+  from clipping, noise, memorization, attention, and kernel benchmarks in
+  docs/models/experiment_findings.md.
+- Moved 35 legacy run directories, old plots/benchmarks, 17 experiment configs,
+  notebooks 04–07, and the parked MLX SWA toolkit into ignored
+  artifacts/archive/pre-mup. Tracked files are also recoverable at a22d1a8.
+  Updated current usage docs and historical pointers.
+- Preserved μP configs, notebooks, scripts, sweep outputs and run directories,
+  usable token caches and tokenizer, generic quickstarts, and model/trainer code.
+  No training or GPU evaluation launched.
+- Verified live documentation links, remaining TOML files, archived dense 2B
+  metrics and model checkpoint, both cache manifests, and all 44 saved μP grid
+  rows. The existing user-authored MoE note retains its original whitespace.
+
+## 2026-11-18 — Add opt-in rotary position encoding
+
+- Added learned/rope model selection for PyTorch and MLX. RoPE replaces the
+  learned position table with adjacent-channel query/key rotations before
+  causal attention. Existing configs default to learned positions.
+- Added a 2,000-update width-256 μP pilot on the existing 2B token cache and
+  instructions for a matched learned-position control. Parked the mixed
+  RoPE/NoPE experiment for follow-up.
+- Four existing PyTorch attention tests passed. Verified relative score
+  invariance, mixed-window PyTorch backward, MLX/PyTorch rotation agreement,
+  two compiled μP updates on Metal, and MLX generation. Checked pilot TOML and
+  cache coverage. No substantial training launched.
+
+## 2026-11-19 — Add cosine annealing branches on MLX resume
+
+- Added `--anneal-steps N` to branch from a checkpoint's actual optimizer LR
+  and reach zero on the final update. The saved branch config retains the
+  original schedule for interrupted resumes. Normal resume remains compatible.
+- Run gpt-mlx-mup-width256-2b-03 ended at absolute step 100,000 with validation
+  loss 3.72708, best 3.71071 at step 92,500, and final logged base LR 0.00078125.
+  Its final checkpoint is the proposed branch source. Parked RoPE meanwhile.
+- All three MLX checkpoint tests passed, including the saved LR versus config
+  peak, cosine midpoint, exact zero, and identical final model and optimizer
+  state after interruption. No substantial anneal training launched.
+
+- Plotted base μP runs -02/-03 and both anneal branches by absolute update in
+  artifacts/analysis/mup-anneal-branches.png. All runs agree at fork step
+  100k, validation 3.72708. At +1k, short/long anneals were 3.71399/3.74932.
+  The long anneal finished at 3.69969 after +4k, below the base best 3.71071.
+  Read saved metrics only.
+
+## 2026-11-19 — Prepare matched fresh-data anneal experiment
+
+- Fork all seven runs directly from the final step-100,000 checkpoint of
+  gpt-mlx-mup-width256-2b-03. The control holds base LR 0.00078125 for 20k
+  updates. Test cosine anneals of 1k/3k/6k/10k/15k/20k and compare each
+  endpoint with the control at the same update.
+- Switched the preparation budget from 819.2M to 409.6M targets when the
+  user clarified the fork point. Started the corrected cache preparation.
+  It skips 1,538,808 nonblank documents in source order, checks the tokenized
+  boundary document, and copies the old validation split byte-for-byte.
+  The original cache was unpinned, so the boundary check does not certify
+  the entire dataset revision or eliminate duplicates.
+- Added explicit --resume-new-cache for sequential continuation with
+  identical validation, retaining model/optimizer state and absolute steps
+  while restarting the cache cursor. Persist the cursor origin for regular
+  resume and anneal resume. All four checkpoint tests passed, including
+  direct anneal with the cache switch. Training branches were not launched.
+- Fresh cache completed with 409,600,001 IDs across 258,862 documents. Verified
+  the manifest, file sizes, and identical validation bytes. Checked that the
+  control LR matches the source optimizer's float32 LR.
+
+## 2026-11-19 — Defer IsoFLOP experiment until after architecture work
+
+- Parked the proposed three-budget/four-width IsoFLOP calibration and single
+  larger prediction check in docs/explorations/README.md. Current priority is
+  RoPE, followed by RoPE/NoPE and other architecture experiments.
+- Documentation change only; no scaling-law runs launched.
+
+- Analyzed the completed seven-run fresh-data branch experiment in notebook10.
+  Confirmed common checkpoint, cache, model, data offset, initial loss and
+  completed endpoint/zero LR per anneal. Executed three code cells and embedded
+  two figures, also exported PNGs. Visually inspected both figures.
+  Anneal endpoint losses at1k/3k/6k/10k/15k/20k were3.71462/3.72337/
+  3.72479/3.72594/3.72063/3.71895. All beat the control at equal steps;
+  constant control ended3.75668. This fresh-data experiment did not beat the
+  base historical best3.71071 or the old-data4k endpoint3.69969.
+
+## 2026-11-19 — Prepare larger-batch anneal comparison
+
+- Added configs and a sequential script for 2x/4x/8x effective batches versus
+  the completed 1k anneal. Accumulation16/32/64 and updates500/250/125 all
+  consume20.48M targets from the same fresh prefix and use the same saved LR.
+- Added explicit --allow-accumulation-change limited to a new-cache anneal,
+  retaining strict ordinary-resume checks. Four checkpoint regression tests
+  passed, including rejection without the flag and correct new batch size
+  and cursor with the flag. Checked shell syntax. Full trials left to user.
+
+## 2026-11-19 — Prepare staircase annealing comparison
+
+- Added staircase LR schedule holding100/50/25/10% over successive quarters,
+  reaching the floor at the final update. Added explicit anneal-schedule
+  selection and persisted it for interrupted resumes, retaining cosine defaults.
+- Prepared1k/3k/5k configs at original effective batch80 from the same step100k
+  checkpoint and fresh-data prefix, plus a sequential launch script.
+  Five checkpoint tests passed including exact staircase boundaries and
+  interrupted-resume model/optimizer equivalence. Full runs left to user.
+
+- Added larger-batch comparison to notebook10 with token-aligned validation
+  curves and noise/variance/cosine plots, executed on saved results and visually
+  inspected both exported figures. Final losses baseline/2x/4x/8x:
+  3.71462/3.71083/3.70965/3.71085. Final noise/signal:
+  75.37/17.78/6.63/3.13; variance scales approximately inversely with batch.
+  Four-batch fixed probes and different endpoint weights limit causal claims.
+  No training launched.
+
+- Checked completed staircase runs and added curves to notebook10. Endpoints
+  1k/3k/5k:3.71549/3.71989/3.72195, all below matched constant controls.
+  Staircase minus cosine endpoint loss at1k/3k:+0.00088/-0.00349.
+  Final raw noise/signal27.04/36.55/36.43. No5kcosine comparator exists.
+  Saved staircase PNG and notebook output. No training launched.
+
+## 2026-11-19 — Prepare 150M-target RoPE architecture run
+
+- Added fresh width256/four-layer μP RoPE config for7,325 updates/150.016M
+  targets on the original2B cache. BaseLR2^-7,zeroWD,clip1,batch80 unchanged;
+  warmup250updates,cosine reaches10%floor atupdate7,325. Updated run command.
+- Validated TOML/model configuration,cache identity,token budget,and unused
+  output path. GPU behavior was verified in the earlier RoPE implementation
+  checks. Full150M training is ready for the user to launch.
+
+## 2026-11-19 — Add interactive transformer architecture explorer
+
+- Added standalone notebooks/transformer-explorer.html with current RoPE,
+  learned-position μP, earlier standard width128, and proposed width512
+  presets. Controls expose context, width, head count, depth, vocabulary,
+  microbatch and tied/independent output weights.
+- Selectable blocks show residual paths, QKV projection, heads, RoPE, and4x
+  GELU MLP shapes. Parameter breakdown and reference attention score memory
+  update with controls. Counts match saved model metadata. JS syntax and
+  preset/head/context calculations passed a DOM-stub execution check.
+  Browser appearance was not inspected. No training launched.
+
+- Fixed transformer explorer stack interactions with delegated component
+  selection. Added explicit selected labels, per-layer weight paths, and
+  clickable token/position embeddings, final norm and output projection with
+  parameter counts and tensor shapes. JS syntax and simulated DOM click checks
+  passed for layer3, embeddings, norm and tied/untied output inspectors.
+
+## 2026-11-19 — Prepare narrow-window RoPE comparisons
+
+- Confirmed archived context256 experiments used window64. Window256 belonged
+  to the later context4096 setup and was an experimental choice.
+- Added window32 and16 configs using three local layers plus final full
+  attention, matching the all-full RoPE150.016M model/training settings except
+  window/layout and output path. Validated GPTConfig and exact settings
+  differences. Reference tiling supports both windows; speed remains to be
+  measured. No training launched.
+
+## 2026-11-19 — Probe first-position attention preferences
+
+- Read-only Metal probe reconstructed full attention on32 fixed validation
+  windows, comparing late queries64–255 and checking reconstructed logits
+  against normal forward. None of the window-start tokens was EOS.
+- μP learned2B model: position0 mean mass3.9635% vs0.1763% per key1–15,
+  layer2head3 mass19.884% and first-key argmax100% of sampled late queries.
+  RoPE150M model:0.1521% vs0.1593%, no comparable first-position preference.
+  Standard learned2B model:7.6039% vs0.2480%. Uniform causal reference0.719%.
+- Saved probe script, scalar JSON and averaged NPZ maps, and executed notebook11
+  with three plots. Visually checked head map. Training histories differ;
+  probabilities alone do not establish sink value contribution or RoPE causality.
+
+- Added individual reading guides directly before each attention-sink figure,
+  explaining axes, averaging, color scales, causal reference, head selection
+  and the first-column versus diagonal pattern. Clarified plot labels and
+  regenerated all three saved figures from the probe summaries. No GPU work.
+
+- Expanded notebook11 with an unbiased overview of every head, full-context
+  received-attention profiles with uniform-causal reference, and distance-bin
+  mass per layer. Used saved averaged attention maps, verified distance bins
+  sum to1, and inspected head grids and distance bars. Included per-figure
+  guides and explained nonlinear brightness, visibility and averaging.
+
+- Added standalone attention map viewer generated from saved NPZ maps, linked
+  near the top of notebook11. Supports model/layer/head selection, cell zoom,
+  drag panning, resizable viewport, color maximum, and exact hover readout.
+  Verified float32 embedding against source arrays, JS syntax, and selection,
+  zoom, fit and readout handlers using a stub DOM. No GPU work. Browser
+  appearance was not inspected.
+
+## 2026-11-19 — Replace attention viewer navigation with a local canvas app
+
+- Added loopback HTTP server with static JS/CSS modules and binary endpoints
+  for saved probe arrays. App supports pointer-anchored wheel zoom, drag/pinch
+  pan, fixed axes, overview navigation, fit, fullscreen, keyboard controls,
+  head/layer selection, color scaling and exact hover values. Camera draws
+  into a fixed viewport instead of resizing a scrollable bitmap.
+- Started http://127.0.0.1:8765 in exec session94815. Checked all static assets
+  and API arrays against source NPZs. Three camera regression tests passed for
+  zoom anchoring, reaching corners and fit at narrow/wide dimensions.
+  JS/Python syntax checks passed. Browser access host was unavailable and
+  native Chrome access timed out, so visual browser testing remains unverified.
+- Notebook11 and previous HTML launch page now point to the local app. Refresh
+  probes loads new saved results. No GPU work or training changes.
+
+## 2026-11-19 — Add SWA-32 RoPE attention-sink experiment
+
+- Added opt-in per-head sink logits in reference Torch/MLX attention, including
+  all full and local layers. Zero-initialized logits enter the denominator,
+  with no value contribution; 16 new parameters for four layers/four heads.
+  μP vector optimizer rules apply. Fused backends reject this option.
+- Prepared 150.016M SWA32 RoPE config matching the plain SWA32 training settings.
+  Five Torch attention tests passed including analytical sink attenuation and
+  gradients. Initial strict GPU parity differed by ~0.0026 with TF32 enabled;
+  rerunning strict FP32 (MLX_ENABLE_TF32=0) passed cross-backend parity, three
+  compiled mixed-window μP updates, learned sink changes, and checkpoint reload.
+  No full training launched.
+
+## 2026-11-19 — Prepare WSD sink-model comparison
+
+- Enabled explicit decay start after warmup to implement WSD using the cosine
+  schedule. New SWA32/RoPE/sink150M config warms250,holds peak to5860,
+  decays to10%at7325. Same LR endpoints,budget and other training settings.
+- Focused schedule test covers warmup,stable hold,mid-decay,floor and invalid
+  start-before-warmup. Pure Python checks verified exact configured boundaries.
+  No substantial training launched.
+
+## 2026-11-19 — Probe GPT-2 Small block dimensions locally
+
+- Prepared12layers,width768,12heads,FFN3072,8kvocab. Retains our μP/RoPE/
+  SWA32(3local:1full repeated)/sink/WSD setup and context256. Parameters
+  97,344,144 total,85,056,144 outside token embeddings/readout.
+- Config uses microbatch4×accumulation20,150.016Mtargets,borrowed smaller-model
+  baseLR2^-7. Two real-cache compiled optimizer updates completed on Metal.
+  Loss8.98720→8.98692; firstupdate5.713s,second2.339s(~8755tok/s).
+  PeakMLXmemory3.559GiB,active1.451GiB. Another WSD trainer was concurrently
+  active; these are short feasibility measurements. Full training not launched.
+  Saved repeatable probe script and JSON report; model config validated.
+
+## 2026-11-19 — First trainable MoE and tutorial
+
+- Researched Switch Transformers (arxiv:2101.03961), Mixtral (2401.04088),
+  and DeepSeek-V3 (2412.19437). Implemented explicit MLX token-choice routing,
+  selected-expert gather_mm, bias-free GELU experts, normalized top-k gates,
+  and Switch-style balancing loss. Top-1 retains its full-softmax gate so
+  task gradients reach the router. No capacity limit or token dropping.
+- Integrated optional MoE FFNs into GPT and the compiled trainer. Training
+  includes auxiliary loss; validation/probe CE remains separate. Statistics
+  record expert assignments, router probabilities/entropy and balancing loss.
+  Dense defaults remain compatible. Initial MoE supports standard parameterization;
+  μP router/expert scaling is not validated and is explicitly rejected.
+- Added width64/two-layer/four-expert/top2 tiny config (677,504 parameters,
+  1,000 updates, 256k targets) and notebook12 with routing walkthrough,
+  equations, explicit expert reference, parameter counts, sources and plots.
+- Verification: 29 MoE/checkpoint/statistics/pretraining tests passed, including
+  selected outputs/gradients versus dense reference, unselected-expert gradients,
+  compiled updates, generation and checkpoint reload. Production entry point
+  completed three real-cache updates with routing JSON and a saved checkpoint.
+  Executed all nine notebook code cells: repeated-passage probe CE fell
+  8.9706 to 0.04354 in 250 updates; reload preserved identical logits.
+  Visually checked four embedded figures. Full 1,000-update run left to user;
+  next inspect expert usage and compare with a matched dense baseline.
+
+## 2026-11-19 — Preserve stable GPT-2-dimensions continuation checkpoint
+
+- Confirmed active 150M WSD run holds base LR 0.0078125 through step5860,
+  then cosine-decays to 0.00078125 at7325. Retention keep1 would remove
+  earlier checkpoints; changing the config would not affect the active trainer.
+- Copied complete step3500 (71.68M targets, still peak LR) into the run's
+  preserved/step-000003500 directory, outside checkpoint pruning. Verified
+  manifest model/optimizer/tokenizer paths and copied tensor file sizes.
+  Model, optimizer moments and batch RNG are retained for later continuation.
+  Active process and schedule unchanged. A nearer-to-decay checkpoint may
+  additionally be preserved while the run is still in its stable phase.
+
+## 2026-11-19 — Optional decay and protected stable checkpoints
+
+- Added training.lr_decay=false: scheduled warmup still runs once, then LR
+  stays at peak regardless of the endpoint. Default true preserves existing
+  schedules; explicit --anneal-steps overrides false for anneal branches.
+- CheckpointWriter forces a save at the last peak-LR step before decay,
+  publishes stable-checkpoint.json, and exempts that directory from pruning.
+  Without decay the stable pointer follows regular saves after warmup.
+  Retention can use one additional checkpoint beyond keep. Updated module README.
+- Prepared sequential_gpt_mlx_mup_gpt2_dims_stable_150m.toml for continuation
+  from the active GPT-2-dimensions run at unchanged peak LR and total150M budget.
+  Checked config compatibility against latest checkpoint3625, still before decay.
+  Resume creates a separate output run and preserves optimizer/data position.
+- Verification:21 checkpoint/pretraining tests passed, including forced
+  between-interval stable save, protected retention, restoring stable weights,
+  disabled-decay continuation, anneal override, and interrupted versus continuous
+  model/optimizer equivalence with accumulation and no warmup restart.
+  No full training stopped or resumed by the agent; provided user command.
+
+## 2026-11-19 — Unpack MoE primitives in the tutorial
+
+- Expanded notebook12 with an ordinary two-matrix GELU FFN, explicit expert
+  weight banks, and a hand-set router scoring three hidden vectors. Explained
+  ln2/residual-stream inputs, learned dot-product scores, top-k selection,
+  selected softmax gates, token dispatch, weighted combination and residual use.
+- Added a literal per-token/per-expert forward pass, router-score and router-weight
+  task gradients, the fixed-selection gate derivative, and how discrete choices
+  change across updates. Distinguished conditional expert execution from sparse
+  parameter matrices and from the elementwise GELU activation function.
+- Unpacked both production gather_mm calls with token indices, intermediate
+  slot indices, a full shape table and equality assertion against SparseMoE.
+- Executed all14 code cells successfully on Metal: primitive assertions,
+  gate normalization, zero unselected-score task gradients, gathered output
+  equivalence, tiny memorization CE8.9706→0.04354 and identical checkpoint reload.
+  Implementation and full training configs unchanged.
+
+## 2026-11-19 — Prefer executable notebook examples
+
+- Removed fenced pseudocode from the MoE tutorial. The FFN and router
+  explanations now lead directly into their existing executable MLX cells;
+  rewrote the gradient-flow text diagram as prose. Preserved all verified
+  cell outputs. Checked that no text-code fences remain. User prefers actual
+  code cells over Markdown pseudocode in Jupyter tutorials.
+
+## 2026-11-19 — Prepare GPT-2 continuation to 300M tokens
+
+- Added stable300M config targeting14649 total updates/300,011,520 targets,
+  same peak LR, accumulation and cache, no end decay. Latest stable150M run
+  completed step7325 with decay disabled; command resumes that checkpoint into
+  a separate stable300M output. Parsed config and checked target arithmetic.
+  Training left for user to launch.
+
+## 2026-11-20 — Trainable MLA and tutorial
+
+- Read DeepSeek-V2 section2.1/AppendixC (https://arxiv.org/html/2405.04434v5),
+  V3 section2.1.1 (https://arxiv.org/html/2412.19437v2), and official V3
+  inference/model.py. Implemented MLX joint KV latent compression, low-rank
+  queries, latent RMSNorms, decoupled shared-key RoPE and per-head values.
+- Added attention_architecture=mla and explicit latent/head dimensions.
+  Initial support is full/reference attention with standard parameterization;
+  unsupported μP, windows, sinks and Torch paths reject explicitly. Existing MHA
+  defaults and old checkpoint config normalization remain compatible.
+- Training expands K/V; attention.decode uses absorbed content queries and
+  latent value mixtures, caching only normalized KV latents and rotated keys.
+  Cache is caller-owned. GPT.generate still recomputes context; no fused MLA
+  kernel, distributed inference or YaRN scaling implemented.
+- Added tiny604,512-parameter corpus config, model README command and notebook13.
+  All11 notebook cells executed;3 plots visually checked. Explicit projections,
+  RoPE pairs, attention weights, absorbed algebra and chunked cache agree.
+  Notebook memorization CE8.9670→0.06507 in250updates; weight reload identical.
+- Verification:29 MLA/MoE/checkpoint/pretraining tests passed. Independent Torch
+  output, parameter-gradient and input-gradient reference; absorbed gradient
+  equivalence; token/chunk caches; causality; compiled training with dense/MoE
+  FFNs; invalid configs; generation and save/load. Production real-cache smoke
+  trained3updates, restored model/optimizer at3 and continued to4 with statistics.
+  Full corpus training left for user; no substantial experiment launched.
+- Also prepared requested MoE150M config: user said150m steps, interpreted
+  explicitly as150M tokens matching GPT experiments. Width64/two-layer/top2-of4,
+  context256, microbatch16×accum5,7325updates/150.016Mtargets,250warmup and stable
+  LR1e-3. Provided launch command during MLA work; full run not launched by agent.
+
+## 2026-11-20 — Diverse prompts and decoding comparisons during training
+
+- Training sampling defaults now cover five short Russian narrative/news/
+  cooking/science/dialogue prompts and temperatures[0,.3,.5,.8]. Zero selects
+  true argmax decoding. Every samples.txt continuation labels its decoding
+  mode, temperature, seed and prompt. Legacy single-temperature configs work.
+- Updated current GPT-2 stable150M/300M, MoE tiny/150M and MLA tiny configs;
+  existing running processes retain their loaded settings until restart/resume.
+  Updated module README and standalone generation CLI, including zero-temp support.
+- Verification:30 pretraining/checkpoint/MoE/MLA tests passed. Greedy output
+  matches explicit repeated argmax and is seed-independent; sampling and greedy
+  preserve training RNG. Cadence, all four modes, flush-on-error, train-mode
+  restoration, invalid settings and legacy temperature behavior checked.
+  No training launched or interrupted.
+
+## 2026-11-20 — Prepare full-corpus MoE continuation with end decay
+
+- Verified MoE width64/top2-of4 run completed7325updates/150.016Mtargets at
+  stableLR1e-3. Prepared width64_2b continuation config:100000totalupdates/
+  2.048Btargets,hold peak until80000,cosine decay to1e-4 at100000.
+  Retains model,data,optimizer-compatible settings and expanded sampling prompts.
+  Config parsed and checked against source checkpoint. New output run; protected
+  stable checkpoint will be saved at80000. Full training left for user to launch.
+
+## 2026-11-20 — Einsum tutorial and smaller interactive notebook steps
+
+- Added notebook14:56 small NumPy cells with saved native execute_result
+  outputs. Builds index notation from reductions/products/transpose through
+  matrix multiplication, diagonals, batching, ellipsis, attention and both
+  MLA contractions. Includes per-entry and per-head equivalents, shape mistakes,
+  and expanded-versus-latent equality checks. Links official NumPy/MLX references.
+- Split notebook13's projection, normalization, head expansion, RoPE, scores
+  and absorbed contractions into bite-size logical cells with immediate native
+  values/shapes. Kept established loops/functions larger. Added an einsum link.
+- Saved user's style preference in AGENTS:build abstractions incrementally,
+  native expression results adjacent to operations, inline flow comments,
+  prints mainly for loops/progress. Updated notebook index.
+- Verification:all56 einsum cells executed on CPU; comparisons passed. Reran
+  MLA derivation and setup cells on Metal,34code cells in revised notebook;
+  retained previously verified output for unchanged250-update training cell.
+  No training rerun and no production implementation changes.
+
+## 2026-11-20 — Prepare 150M-token MLA experiment
+
+- Added sequential_gpt_mlx_mla_width64_150m.toml:unchanged width64/two-layer
+  MLA,dense FFNs,context256,microbatch16×accum5,7325updates/150.016Mtargets.
+  Training/statistics/generation settings match the initial150M MoE run:
+  warmup250,stableLR1e-3,decay disabled,expanded prompts and decoding modes.
+- Parsed config and verified token arithmetic and matching comparison settings.
+  Updated model README's MLA launch command to point at this experiment;
+  retained the tiny smoke config. Full run left for user to launch.
+
+## 2026-11-20 — Tokens per parameter and MLA continuation to 512M
+
+- Progress displays tok/param in both backends, dividing all processed training
+  targets by total parameter count (including embeddings and all MoE experts).
+  MLX checkpoints now store tokens_processed_total and carry it forward across
+  resumes, cache switches and effective-batch changes. Legacy fixed-batch
+  checkpoints infer total tokens from saved step/batch/context. Throughput
+  remains scoped to the current invocation; no CSV schema change.
+- Verified29 progress/checkpoint/pretraining tests, including display values,
+  legacy fallback, changed-accumulation token totals across repeated resumes,
+  unchanged model/optimizer resume equivalence and terminal redraws.
+- Prepared sequential_gpt_mlx_mla_width64_512m.toml, continuing completed
+  MLA150M checkpoint7325 to25000totalupdates/exact512Mtargets. Retains stable
+  LR1e-3 and all other settings. Parsed config, checked source compatibility
+  and token arithmetic. Provided launch command; no training launched.
+
+## 2026-11-20 — Save accumulated architecture and training work
+
+- Prepared all accumulated changes for commit/push:authorized legacy-experiment
+  retirement and findings, RoPE/SWA/sinks, fresh-data/anneal/staircase controls,
+  attention viewer/model explorer, MoE/MLA implementations and tutorials,
+  einsum notebook, greedy/multi-temperature samples, protected stable checkpoints,
+  cumulative tok/param progress and experiment/continuation configs.
+- Final verification:Python discovery ran77tests successfully,with1skip for
+  the optional local windowed MLX build; all3viewer camera tests passed.
+  Parsed27changed/newPython files,22TOMLconfigs and5notebooks. Diff whitespace
+  check reports only the previously preserved user-authored MoE note's spaces.
+- Training artifacts/caches/checkpoints and retired local archives remain
+  ignored. Full training and sweeps remain user-run. Next:launch the prepared
+  MLA512M continuation and inspect the MoE/MLA learning curves and routing stats.

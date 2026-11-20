@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Our transformer, from tokens to logits</title>
+<style>
+  :root { color-scheme: light dark; --bg:#f6f5f1; --panel:#fff; --ink:#202d37; --muted:#52616d; --line:#d5dcd8; --blue:#215eb2; --tint:#eaf1fc; --green:#137b64; --greenbg:#e6f4ed; }
+  @media(prefers-color-scheme:dark) { :root { --bg:#151b20; --panel:#20282f; --ink:#e8edf0; --muted:#b2bfc8; --line:#46535d; --blue:#99c1ff; --tint:#263c57; --green:#8be0c2; --greenbg:#203e36; } }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 system-ui,sans-serif }
+  main { max-width:1380px; margin:auto; padding:36px 24px }
+  h1 { font-size:clamp(26px,3vw,40px); letter-spacing:-.035em; margin:0 0 8px }
+  h2 { font-size:21px; margin:0 0 12px } h3 { font-size:17px; margin:0 0 8px }
+  p { margin:8px 0 16px; max-width:850px }
+  .muted, small { color:var(--muted) }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:22px }
+  .controls { display:grid; grid-template-columns:repeat(3,1fr); gap:18px; margin:24px 0 }
+  label { display:block; font-size:14px; font-weight:600 }
+  select { width:100%; padding:9px; margin-top:5px; border:1px solid var(--line); border-radius:7px; background:var(--panel); color:var(--ink); font:inherit }
+  button { font:inherit; color:inherit; cursor:pointer }
+  :focus-visible { outline:3px solid var(--blue); outline-offset:3px }
+  .metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:22px }
+  .metric strong { display:block; font-size:28px; font-variant-numeric:tabular-nums }
+  .metric span { color:var(--muted); font-size:14px }
+  .columns { display:grid; grid-template-columns:minmax(260px,.8fr) minmax(480px,1.5fr); gap:22px; align-items:start }
+  .flow { display:flex; flex-direction:column; align-items:stretch; gap:7px }
+  .arrow { text-align:center; color:var(--muted); line-height:1 }
+  .stage,.layer { padding:12px; border:1px solid var(--line); border-radius:9px; text-align:center; background:var(--panel) }
+  .stage strong,.stage span { display:block }
+  .stage span { color:var(--muted); font-size:14px }
+  .layer[aria-pressed=true] { border:2px solid var(--blue); background:var(--tint); padding:11px }
+  .stage[aria-pressed=true] { border:2px solid var(--blue); background:var(--tint); padding:11px }
+  .selection { color:var(--blue); font-size:13px; display:block; margin-top:4px }
+  .row { display:flex; gap:8px; justify-content:space-between; align-items:center }
+  .layer small { font-size:13px }
+  .op { padding:13px; border-radius:9px; border:1px solid var(--line); margin:8px 0; text-align:center }
+  .attention { border-color:var(--blue); background:var(--tint) }
+  .mlp { border-color:var(--green); background:var(--greenbg) }
+  .heads { display:grid; gap:6px; margin:10px 0 }
+  .head { border:1px solid var(--blue); border-radius:6px; padding:8px 3px; font-size:13px }
+  .head span { display:block }
+  .residual { border-left:3px solid var(--green); padding-left:14px; margin:16px 0 }
+  .residual > small { display:block; text-align:right }
+  .tokens { display:flex; gap:5px; margin:10px 0; flex-wrap:wrap }
+  .token { border:1px solid var(--line); border-radius:5px; padding:5px 9px; font:13px ui-monospace,monospace }
+  .detail { margin-top:22px }
+  table { width:100%; border-collapse:collapse; font-size:14px }
+  th,td { padding:10px 5px; border-bottom:1px solid var(--line); text-align:left }
+  th:last-child,td:last-child { text-align:right; font-variant-numeric:tabular-nums }
+  .bar { height:13px; border-radius:3px; background:var(--blue); margin-top:4px; min-width:0 }
+  .legend { display:flex; flex-wrap:wrap; gap:16px; font-size:14px; margin:16px 0 }
+  code { font-family:ui-monospace,monospace; font-size:.9em }
+  .footer { font-size:14px; margin-top:24px; color:var(--muted) }
+  @media(max-width:850px) { .columns { grid-template-columns:1fr } .controls { grid-template-columns:repeat(2,1fr) } .metrics { grid-template-columns:repeat(2,1fr) } main { padding:22px 14px } }
+</style>
+<main>
+  <h1>Our transformer, from tokens to logits</h1>
+  <p class="muted">Explore the dense MLX GPT we train. Change a dimension, then select a layer to inspect its attention heads, residual paths, and feed-forward network.</p>
+  <div class="controls panel">
+    <label>Experiment preset<select id="preset">
+      <option value="rope">Current RoPE experiment · width 256</option>
+      <option value="mup">μP baseline · learned positions · width 256</option>
+      <option value="small">Earlier standard GPT · width 128</option>
+      <option value="wide">Proposed RoPE model · width 512</option>
+      <option value="custom">Custom dimensions</option>
+    </select></label>
+    <label>Context length · T<select id="context"></select></label>
+    <label>Model width · d<select id="width"></select></label>
+    <label>Attention heads · H<select id="heads"></select></label>
+    <label>Transformer layers · L<select id="layers"></select></label>
+    <label>Position encoding<select id="position"><option value="rope">RoPE</option><option value="learned">Learned absolute embeddings</option></select></label>
+    <label>Vocabulary size · V<select id="vocab"><option value="8000">8,000 · our Russian BPE</option><option value="32000">32,000</option><option value="50000">50,000</option></select></label>
+    <label>Output weights<select id="readout"><option value="untied">Independent head · our μP model</option><option value="tied">Tied to input embedding · standard model</option></select></label>
+    <label>Sequences per microbatch · B<select id="batch"></select></label>
+  </div>
+  <div class="metrics" aria-live="polite">
+    <div class="panel metric"><span>Total trainable parameters</span><strong id="total"></strong></div>
+    <div class="panel metric"><span>Channels in each head · d / H</span><strong id="headsize"></strong></div>
+    <div class="panel metric"><span>Targets per microbatch · B × T</span><strong id="targets"></strong></div>
+    <div class="panel metric"><span>Reference attention scores / layer</span><strong id="scores"></strong></div>
+  </div>
+  <div class="columns">
+    <section class="panel">
+      <h2>Model stack</h2>
+      <div id="tokens" class="tokens" aria-label="Illustrative token positions"></div>
+      <div id="stack" class="flow"></div>
+      <p class="muted" id="position-note"></p>
+    </section>
+    <section class="panel">
+      <h2 id="layer-title"></h2>
+      <p class="muted" id="inspector-note"></p>
+      <div id="inside"></div>
+      <p id="head-note"></p>
+    </section>
+  </div>
+  <div class="columns detail">
+    <section class="panel"><h2>Where the parameters go</h2><div id="parameters"></div></section>
+    <section class="panel"><h2>What each dimension changes</h2>
+      <table>
+        <thead><tr><th>Dimension</th><th>Effect in this GPT</th></tr></thead>
+        <tbody>
+          <tr><td>Context T</td><td>Positions visible in one sequence. Dense attention scores grow as T². Learned position tables add T × d weights.</td></tr>
+          <tr><td>Width d</td><td>Channels carried at every token. Hidden matrix parameters grow roughly as d². Each feed-forward network expands to 4d.</td></tr>
+          <tr><td>Heads H</td><td>Partitions d into H parallel attention heads. At fixed d, projection parameter counts stay the same.</td></tr>
+          <tr><td>Layers L</td><td>Sequential processing depth. Adds a full set of attention, feed-forward and normalization weights per layer.</td></tr>
+          <tr><td>Vocabulary V</td><td>Input token rows and output classes. Independent input and output matrices each contain V × d weights.</td></tr>
+          <tr><td>Batch B</td><td>Sequences processed together. Changes activation memory and targets per update, while parameter counts stay the same.</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </div>
+  <p class="footer">Shapes include the microbatch dimension B. Counts include biases and LayerNorm parameters. Attention score memory is B × H × T × T in FP32 for one layer, excluding other activations and gradients. Our reference attention materializes this tensor. Fused kernels can avoid storing the full score matrix. Gradient accumulation increases targets per optimizer update without changing B here.</p>
+  <p class="footer">RoPE rotates Q and K using a fixed frequency base of 10,000 and adds no trainable position parameters. The diagram shows causal full attention and the 4× GELU feed-forward network used in our code. Values are computed locally from these dimensions.</p>
+</main>
+<script>
+(() => {
+  const ids = ["preset","context","width","heads","layers","position","vocab","readout","batch"];
+  const ui = Object.fromEntries(ids.map(id => [id, document.getElementById(id)]));
+  const setText = (id, value) => { document.getElementById(id).textContent = value; };
+  const number = n => n.toLocaleString("en-US");
+  function options(id, values) {
+    ui[id].replaceChildren(...values.map(n => {
+      const option = document.createElement("option");
+      option.value = n; option.textContent = number(n); return option;
+    }));
+  }
+  options("context", [64,128,256,512,1024,2048,4096]);
+  options("width", [32,64,128,256,512,768,1024]);
+  options("layers", [1,2,4,6,8,12,16]);
+  options("batch", [1,2,4,8,10,16,32,80]);
+  let selectedLayer = 0;
+  let selectedStage = "layer";
+  function heads() {
+    const previous = +ui.heads.value || 4, d = +ui.width.value;
+    const valid = [1,2,4,8,16].filter(h => d % h === 0 && (ui.position.value !== "rope" || (d/h)%2 === 0));
+    options("heads", valid);
+    ui.heads.value = valid.includes(previous) ? previous : valid[0];
+  }
+  function stage(title, subtitle) {
+    return '<div class="stage"><strong>'+title+'</strong><span>'+subtitle+'</span></div>';
+  }
+  function selectableStage(key, title, subtitle, params) {
+    return '<button class="stage" data-stage="'+key+'" aria-pressed="'+(selectedStage===key)+'"><strong>'+title+
+      '</strong><span>'+subtitle+'</span><span>'+params+'</span>'+
+      (selectedStage===key?'<span class="selection">Selected</span>':'')+'</button>';
+  }
+  document.getElementById("stack").onclick = event => {
+    const button = event.target.closest("button[data-stage]");
+    if(!button) return;
+    selectedStage=button.dataset.stage;
+    if(selectedStage==="layer") selectedLayer=+button.dataset.layer;
+    draw();
+  };
+  const arrow = '<div class="arrow" aria-hidden="true">↓</div>';
+  function draw() {
+    const T=+ui.context.value, d=+ui.width.value, H=+ui.heads.value, L=+ui.layers.value;
+    const V=+ui.vocab.value, B=+ui.batch.value, dh=d/H;
+    const rope=ui.position.value==="rope", untied=ui.readout.value==="untied";
+    const norm=2*d, qkv=3*d*d+3*d, projection=d*d+d, mlp=8*d*d+5*d;
+    const block=qkv+projection+mlp+2*norm;
+    const parts=[["Token embeddings",V*d],["Position embeddings",rope?0:T*d],
+      ["Attention projections · all layers",L*(qkv+projection)],
+      ["Feed-forward networks · all layers",L*mlp],
+      ["LayerNorms · all layers + final",(2*L+1)*norm],["Independent output head",untied?V*d:0]];
+    const total=parts.reduce((s,p)=>s+p[1],0);
+    setText("total", number(total)); setText("headsize", number(dh));
+    setText("targets", number(B*T)); setText("scores",(4*B*H*T*T/1048576).toLocaleString("en-US",{maximumFractionDigits:1})+" MiB");
+    selectedLayer=Math.min(selectedLayer,L-1);
+    if(rope && selectedStage==="position") selectedStage="embedding";
+    document.getElementById("tokens").innerHTML=Array.from({length:Math.min(T,8)},(_,i)=>'<span class="token">'+i+'</span>').join('')+'<span class="token">… '+number(T)+' positions</span>';
+    let stack=stage("Token IDs",B+" × "+T)+arrow+
+      selectableStage("embedding","Token embedding",B+" × "+T+" × "+d,number(V*d)+" parameters");
+    if(!rope) stack+=arrow+selectableStage("position","+ Learned positions",T+" × "+d,number(T*d)+" parameters");
+    for(let i=0;i<L;i++) {
+      const active=selectedStage==="layer" && selectedLayer===i;
+      stack+=arrow+'<button class="layer" data-stage="layer" aria-pressed="'+active+'" data-layer="'+i+
+        '"><span class="row"><strong>Layer '+(i+1)+'</strong><small>'+number(block)+' parameters</small></span>'+
+        (active?'<span class="selection">Selected · blocks.'+i+'</span>':'')+'</button>';
+    }
+    stack+=arrow+selectableStage("norm","Final LayerNorm",B+" × "+T+" × "+d,number(norm)+" parameters")+
+      arrow+selectableStage("output",untied?"Independent output projection":"Shared embedding output projection",
+        d+" → "+number(V),untied?number(V*d)+" parameters":"Shares "+number(V*d)+" embedding weights · 0 additional")+
+      arrow+stage("Logits",B+" × "+T+" × "+number(V));
+    document.getElementById("stack").innerHTML=stack;
+    setText("position-note",rope?"RoPE enters inside every attention layer, after Q and K are split into heads.":"Learned position vectors are added once, before the first layer.");
+    setText("layer-title","Inside layer "+(selectedLayer+1));
+    setText("inspector-note","blocks."+selectedLayer+" · Independent weights with the same structure as the other layers. Each layer processes all T positions.");
+    const shape=B+" × "+T+" × "+d;
+    let headBoxes=Array.from({length:H},(_,i)=>'<div class="head"><strong>Head '+(i+1)+'</strong><span>'+dh+' channels</span><span>'+T+' × '+T+' scores</span></div>').join('');
+    document.getElementById("inside").innerHTML=
+      stage("Residual input x",shape)+
+      '<div class="residual"><small>Skip path carries x to the addition</small><div class="op">LayerNorm · '+number(norm)+' weights</div>'+
+      '<div class="op attention"><strong>Query, key and value projection</strong><div>'+d+' → 3 × '+d+' · '+number(qkv)+' weights</div>'+
+      '<div class="heads" style="grid-template-columns:repeat('+Math.min(H,4)+',1fr)">'+headBoxes+'</div>'+
+      (rope?'<div>RoPE rotates each head’s Q and K by token position</div>':'')+
+      '<div>Each head computes softmax(QKᵀ × scale + causal mask) V</div>'+
+      '<small>Head tensor B × H × T × d/H = '+B+' × '+H+' × '+T+' × '+dh+'</small>'+
+      '<div>Concatenate heads → '+d+' channels</div>'+
+      '<div>Output projection · '+d+' → '+d+' · '+number(projection)+' weights</div></div>'+
+      '<div class="op">Add residual · x + attention(x)</div></div>'+
+      '<div class="residual"><small>Second skip path carries the updated x</small><div class="op">LayerNorm · '+number(norm)+' weights</div>'+
+      '<div class="op mlp"><strong>Feed-forward network</strong><div>'+d+' → '+(4*d)+' → GELU → '+d+'</div><div>'+number(mlp)+' weights</div></div>'+
+      '<div class="op">Add residual · x + feed-forward(x)</div></div>'+
+      stage("Output to the next layer",shape);
+    setText("head-note",H+" heads share the "+d+" channels. Each position keeps a "+d+"-channel representation throughout the stack. Attention can read only the current position and earlier positions.");
+    if(selectedStage!=="layer") {
+      const detail={
+        embedding:["Token embedding","token_embedding.weight",
+          "Lookup table with "+number(V)+" token rows and "+d+" channels per row.",
+          V+" × "+d,number(V*d)+" trainable parameters",
+          "Input IDs "+B+" × "+T+" → embeddings "+shape],
+        position:["Learned positions","position_embedding.weight",
+          "One learned vector per position, broadcast across the batch and added to token embeddings.",
+          T+" × "+d,number(T*d)+" trainable parameters","Output "+shape],
+        norm:["Final LayerNorm","final_norm",
+          "Normalizes the channels at each token. The learned scale and bias each contain "+d+" values.",
+          "Scale "+d+" + bias "+d,number(norm)+" trainable parameters","Input and output "+shape],
+        output:[untied?"Independent output projection":"Shared output projection",untied?"lm_head.weight":"token_embedding.weight",
+          "Maps each token's hidden channels to one logit per vocabulary entry.",
+          V+" × "+d,untied?number(V*d)+" trainable parameters":"0 additional parameters · shared with input embedding",
+          shape+" → "+B+" × "+T+" × "+number(V)]
+      }[selectedStage];
+      setText("layer-title",detail[0]);
+      setText("inspector-note",detail[1]);
+      document.getElementById("inside").innerHTML=stage("Weight shape",detail[3])+
+        '<div class="op attention"><strong>'+detail[4]+'</strong><p>'+detail[2]+'</p></div>'+stage("Tensor flow",detail[5]);
+      setText("head-note",selectedStage==="output" && untied?
+        "Our μP readout multiplies projected logits by base width / model width. This scaling adds no trainable parameters.":"");
+    }
+    document.getElementById("parameters").innerHTML='<table><thead><tr><th>Component</th><th>Parameters</th></tr></thead><tbody>'+
+      parts.map(([name,count])=>'<tr><td>'+name+'<div class="bar" style="width:'+(100*count/total)+'%"></div></td><td>'+number(count)+'</td></tr>').join('')+
+      '<tr><th>Total</th><th>'+number(total)+'</th></tr></tbody></table>';
+  }
+  const presets={
+    rope:{context:256,width:256,layers:4,position:"rope",readout:"untied"},
+    mup:{context:256,width:256,layers:4,position:"learned",readout:"untied"},
+    small:{context:256,width:128,layers:4,position:"learned",readout:"tied"},
+    wide:{context:256,width:512,layers:4,position:"rope",readout:"untied"}
+  };
+  function preset() {
+    const p=presets[ui.preset.value]; if(!p) return;
+    Object.entries({...p,vocab:8000,batch:10}).forEach(([key,value])=>{ui[key].value=value;});
+    heads(); ui.heads.value=4; selectedLayer=0; selectedStage="layer"; draw();
+  }
+  ui.preset.onchange=preset;
+  ids.filter(id=>id!=="preset").forEach(id=>ui[id].onchange=()=>{
+    ui.preset.value="custom"; if(id==="width" || id==="position") heads(); draw();
+  });
+  preset();
+})();
+</script>
+</html>

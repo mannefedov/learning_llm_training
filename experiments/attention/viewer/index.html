@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Attention explorer</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div><h1>Attention explorer</h1><p>Wheel to zoom at the pointer · drag to pan · pinch on touch · F to fit</p></div>
+  <button id="reload">Refresh probes</button>
+</header>
+<main>
+  <aside>
+    <label>Checkpoint<select id="checkpoint"></select></label>
+    <p id="metadata"></p>
+    <div class="selection">
+      <label>Layer<select id="layer"></select></label>
+      <label>Head<select id="head"></select></label>
+    </div>
+    <label>Brightness scale<select id="scale">
+      <option value="power">Reveal weak attention</option>
+      <option value="linear">Linear probability</option>
+    </select></label>
+    <label>Color maximum<select id="maximum">
+      <option value="1">100%</option><option value=".3">30%</option>
+      <option value=".1">10%</option><option value=".05">5%</option>
+    </select></label>
+    <div class="legend"><div></div><span>0%</span><span id="maximum-label">100%</span></div>
+    <small>Gray cells are masked future positions. Values above the maximum share the brightest color.</small>
+    <h2>Position overview</h2>
+    <canvas id="overview" width="256" height="256" tabindex="0"
+            aria-label="Full attention map overview. Click to center the main view on a position."></canvas>
+    <small>Click to navigate. The rectangle marks the visible region.</small>
+    <h2>Cell probability</h2>
+    <output id="readout">Hover a cell to inspect it.</output>
+    <small>Query = token reading · key = token being read</small>
+  </aside>
+  <section class="workspace">
+    <div class="toolbar">
+      <strong id="heading">Loading probes…</strong>
+      <div><button id="zoom-out" aria-label="Zoom out">−</button>
+        <output id="zoom-label">100%</output><button id="zoom-in" aria-label="Zoom in">+</button>
+        <button id="fit">Fit</button><button id="fullscreen">Full screen</button></div>
+    </div>
+    <div id="viewport" tabindex="0" aria-label="Attention canvas. Arrow keys pan, plus and minus zoom, F fits the map.">
+      <canvas id="map" role="img" aria-label="Attention probability by query and key position"></canvas>
+      <div id="status" role="status"></div>
+    </div>
+    <p class="caption">Horizontal axis — key position · Vertical axis — query position. Bright diagonal bands show nearby attention; vertical bands show fixed-position preferences. These maps average validation windows with different token content.</p>
+  </section>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>

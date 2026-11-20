@@ -12,6 +12,21 @@ from llm_training.models.gpt import GPT
 
 
 class AttentionTests(unittest.TestCase):
+    def test_sink_can_absorb_mass_and_receives_gradients(self):
+        from llm_training.models.attention import masked_attention
+
+        q = k = torch.zeros(1, 2, 3, 4)
+        v = torch.ones(1, 2, 3, 4)
+        allowed = torch.arange(3)[:, None] >= torch.arange(3)[None, :]
+        sinks = torch.zeros(2, requires_grad=True)
+        result = masked_attention(q, k, v, allowed, sink_logits=sinks)
+        expected = torch.tensor([.5, 2/3, .75])[None, None, :, None].expand_as(result)
+        torch.testing.assert_close(result, expected)
+        result.sum().backward()
+        self.assertTrue(torch.all(sinks.grad < 0))
+        absorbed = masked_attention(q, k, v, allowed, sink_logits=torch.full((2,), 30.))
+        self.assertLess(absorbed.abs().max().item(), 1e-10)
+
     @classmethod
     def setUpClass(cls):
         cls.threads = torch.get_num_threads()

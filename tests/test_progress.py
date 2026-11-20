@@ -19,6 +19,21 @@ class Terminal(io.StringIO):
 
 
 class ProgressTests(unittest.TestCase):
+    def test_tokens_per_parameter_counts_previous_training(self):
+        with redirect_stdout(io.StringIO()) as output:
+            with TrainingProgress(100, start_step=50, tokens_per_step=20,
+                                  parameter_count=1000) as progress:
+                self.assertEqual(progress.tokens_per_parameter, 1)
+                progress.update(60)
+                self.assertEqual(progress.tokens_per_parameter, 1.2)
+        self.assertIn("tok/param=1.20", output.getvalue())
+        with redirect_stdout(io.StringIO()):
+            # Resume with a larger effective batch: preserve the original total.
+            progress = TrainingProgress(100, start_step=50, tokens_per_step=40,
+                                        parameter_count=1000, tokens_before_start=1000)
+            progress.update(60)
+            self.assertEqual(progress.tokens_per_parameter, 1.4)
+
     def test_multiline_status_redraws_when_terminal_width_changes(self):
         output = Terminal()
         clear_row = "\x1b[2K"

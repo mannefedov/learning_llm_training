@@ -22,8 +22,12 @@ class TrainingProgress:
     """
 
     def __init__(self, total: int, start_step: int = 0, steps_per_epoch: int | None = None,
-                 tokens_per_step: int = 0):
+                 tokens_per_step: int = 0, parameter_count: int | None = None,
+                 tokens_before_start: int | None = None):
         self.tokens_per_step = tokens_per_step
+        self.parameter_count = parameter_count
+        self.tokens_before_start = (start_step * tokens_per_step
+                                    if tokens_before_start is None else tokens_before_start)
         self.total = total
         self.steps_per_epoch = steps_per_epoch
         self.step = start_step
@@ -60,6 +64,13 @@ class TrainingProgress:
         return {"elapsed_seconds": elapsed, "tokens_processed": tokens,
                 "tokens_per_second": tokens / elapsed if tokens and elapsed > 0 else None}
 
+    @property
+    def tokens_per_parameter(self):
+        if not self.parameter_count:
+            return None
+        tokens = self.tokens_before_start + (self.step - self.start_step) * self.tokens_per_step
+        return tokens / self.parameter_count
+
     def _display(self, status="training"):
         now = time.monotonic()
         elapsed = now - self.started
@@ -80,6 +91,8 @@ class TrainingProgress:
         if self.tokens_per_step:
             speed = completed * self.tokens_per_step / elapsed if completed and elapsed > 0 else None
             rate = f" tok/s={speed:,.0f}" if speed is not None else " tok/s=--"
+        if self.tokens_per_parameter is not None:
+            rate += f" tok/param={self.tokens_per_parameter:.2f}"
         line = (f"{status} [{bar}] {100 * self.step / self.total:5.1f}% "
                 f"{self.step}/{self.total}{rate} elapsed={format_duration(elapsed)} ETA={eta}{epochs}{losses}")
         if self.interactive:

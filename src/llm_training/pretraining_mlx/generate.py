@@ -38,18 +38,21 @@ def generate_text(model, tokenizer, prompt: str, *, max_new_tokens: int = 100,
 
     Use a local sampling key so comparisons are repeatable on the same backend
     without changing the training RNG. The model crops context using its existing generate().
+    Temperature zero uses greedy argmax decoding and consumes no random samples.
     """
     import mlx.core as mx
 
-    if not math.isfinite(temperature) or temperature <= 0 or max_new_tokens < 0:
-        raise ValueError("temperature must be finite and positive; max_new_tokens nonnegative")
+    if not math.isfinite(temperature) or temperature < 0 or max_new_tokens < 0:
+        raise ValueError("temperature must be finite and nonnegative; max_new_tokens nonnegative")
     ids = tokenizer.encode(prompt, add_special_tokens=False).ids
     if not ids:
         raise ValueError("Provide a nonempty prompt that encodes to at least one token")
     key = mx.random.key(seed)
     tokens = mx.array([ids], dtype=mx.int32)
     for _ in range(max_new_tokens):
-        key, sample_key = mx.random.split(key)
+        sample_key = None
+        if temperature > 0:
+            key, sample_key = mx.random.split(key)
         tokens = model.generate(tokens, max_new_tokens=1, temperature=temperature, key=sample_key)
         if eos_id is not None and tokens[0, -1].item() == eos_id:
             break
@@ -61,20 +64,22 @@ def main():
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--prompt", action="append", required=True,
                         help="Repeat this option to compare multiple prompts")
-    parser.add_argument("--temperature", type=float, nargs="+", default=[0.8])
+    parser.add_argument("--temperature", type=float, nargs="+", default=[0, 0.3, 0.5, 0.8],
+                        help="Temperatures to compare; 0 selects greedy decoding")
     parser.add_argument("--max-new-tokens", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", choices=["auto", "cpu", "gpu"], default="auto")
     args = parser.parse_args()
-    if args.max_new_tokens < 0 or any(not math.isfinite(t) or t <= 0 for t in args.temperature):
-        parser.error("max-new-tokens must be nonnegative and temperatures finite and positive")
+    if args.max_new_tokens < 0 or any(not math.isfinite(t) or t < 0 for t in args.temperature):
+        parser.error("max-new-tokens and temperatures must be nonnegative; temperatures must be finite")
     if any(not prompt for prompt in args.prompt):
         parser.error("prompts must be nonempty")
     model, tokenizer, eos_id = load_checkpoint(args.run_dir, args.device)
     print(f"Checkpoint: {args.run_dir}")
     for prompt in args.prompt:
         for temperature in args.temperature:
-            print(f"\nPrompt: {prompt!r}; temperature={temperature}; seed={args.seed}")
+            mode = "greedy" if temperature == 0 else "sampling"
+            print(f"\nPrompt: {prompt!r}; decoding={mode}; temperature={temperature}; seed={args.seed}")
             print(generate_text(model, tokenizer, prompt, max_new_tokens=args.max_new_tokens,
                                 temperature=temperature, seed=args.seed, eos_id=eos_id))
 

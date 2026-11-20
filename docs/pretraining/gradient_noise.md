@@ -206,14 +206,11 @@ estimate therefore does not fully describe our optimizer's actual update noise.
 ## Observations and open questions
 
 The numeric examples above are **local measurements**, not results reported by
-the paper. See [the statistics notebook](../../notebooks/06_training_statistics.ipynb)
-for the saved comparisons.
+the paper. See the
+[dense GPT experiment findings](../models/experiment_findings.md) for the saved comparisons.
 
 Accumulation ×4 improved validation at the same 512M-token budget. It also changed
 the number of Adam updates, token-scale momentum history, and cumulative weight
-decay. The experiment supports using ×4 as a baseline; it does not isolate noise
-reduction as the sole cause of the improvement.
-
-Open questions are whether ×8 improves further, how stable our estimates are
-across more probe batches, and how much of the observed gain comes from reduced
-cumulative regularization rather than averaging alone.
+decay. Accumulation ×8 lowered sampled gradient noise further but increased
+validation loss relative to ×4 at the original LR. Doubling LR and halving
+weight decay improved the ×8 result. This supports retuning LR with batch size.

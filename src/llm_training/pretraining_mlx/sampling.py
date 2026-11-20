@@ -12,9 +12,13 @@ from .generate import generate_text
 class GenerationConfig:
     enabled: bool = True
     every: int = 500
-    prompts: list[str] = field(default_factory=lambda: ["Сегодня утром я"])
+    prompts: list[str] = field(default_factory=lambda: [
+        "Сегодня утром я", "В Москве сегодня", "Чтобы приготовить суп,",
+        "Учёные обнаружили", "— Ты куда",
+    ])
     max_new_tokens: int = 100
-    temperature: float = 0.8
+    temperature: float | None = None  # Legacy single-temperature configs.
+    temperatures: list[float] | None = None
     seed: int = 42
 
     def __post_init__(self):
@@ -22,11 +26,23 @@ class GenerationConfig:
             raise ValueError("generation.enabled must be a boolean")
         if self.every < 1 or self.max_new_tokens < 1:
             raise ValueError("generation.every and max_new_tokens must be positive")
-        if not math.isfinite(self.temperature) or self.temperature <= 0:
-            raise ValueError("generation.temperature must be finite and positive")
+        if self.temperature is not None and self.temperatures is not None:
+            raise ValueError("Use generation.temperatures or the legacy temperature, not both")
+        if self.temperatures is not None and (
+                not isinstance(self.temperatures, list) or not self.temperatures):
+            raise ValueError("generation.temperatures must be a nonempty list")
+        if any(isinstance(t, bool) or not isinstance(t, (int, float))
+               or not math.isfinite(t) or t < 0 for t in self.decoding_temperatures):
+            raise ValueError("generation temperatures must be finite and nonnegative (0 = greedy)")
         if (not isinstance(self.prompts, list) or not self.prompts
                 or any(not isinstance(p, str) or not p for p in self.prompts)):
             raise ValueError("generation.prompts must be a nonempty list of nonempty strings")
+
+    @property
+    def decoding_temperatures(self):
+        if self.temperatures is not None:
+            return self.temperatures
+        return [self.temperature] if self.temperature is not None else [0.0, 0.3, 0.5, 0.8]
 
 
 @contextmanager
@@ -48,14 +64,16 @@ def log_samples(output_dir: Path, model, tokenizer, eos_id: int,
             model.eval()
             try:
                 for prompt in config.prompts:
-                    text = generate_text(model, tokenizer, prompt,
-                                         max_new_tokens=config.max_new_tokens,
-                                         temperature=config.temperature,
-                                         seed=config.seed, eos_id=eos_id)
-                    file.write(f"=== step={step} temperature={config.temperature} "
-                               f"seed={config.seed} max_new_tokens={config.max_new_tokens} ===\n"
-                               f"Prompt: {prompt!r}\n{text}\n\n")
-                    file.flush()
+                    for temperature in config.decoding_temperatures:
+                        text = generate_text(model, tokenizer, prompt,
+                                             max_new_tokens=config.max_new_tokens,
+                                             temperature=temperature,
+                                             seed=config.seed, eos_id=eos_id)
+                        mode = "greedy" if temperature == 0 else "sampling"
+                        file.write(f"=== step={step} decoding={mode} temperature={temperature} "
+                                   f"seed={config.seed} max_new_tokens={config.max_new_tokens} ===\n"
+                                   f"Prompt: {prompt!r}\n{text}\n\n")
+                        file.flush()
             finally:
                 model.train(was_training)
         yield record

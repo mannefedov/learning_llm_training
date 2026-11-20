@@ -26,9 +26,16 @@ def main():
         raise ValueError("gradient_accumulation_steps must be a positive integer")
     token_limit = (config["training"]["steps"] * config["training"]["batch_size"] * accumulation
                    * config["model"]["context_length"] + 1)
+    cache = config["cache"]
+    if "train_tokens" in cache:
+        token_limit = cache["train_tokens"]
+        if type(token_limit) is not int or token_limit < 2:
+            raise ValueError("cache.train_tokens must be an integer >= 2")
+    after_cache = Path(cache["after"]) if "after" in cache else None
     prepare_cache(Path(config["cache"]["directory"]), config["data"],
                   Path(config["tokenizer"]["path"]), config["tokenizer"]["eos_token"], token_limit,
-                  allow_short_train=config["training"].get("sampling", "random") == "sequential")
+                  allow_short_train=after_cache is None and config["training"].get("sampling", "random") == "sequential",
+                  after_cache=after_cache)
     print(f"Cache ready: {config['cache']['directory']}", flush=True)
 
 

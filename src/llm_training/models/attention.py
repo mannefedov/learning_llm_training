@@ -16,11 +16,33 @@ from .config import GPTConfig
 from .numerics import stable_softmax
 
 
-def masked_attention(q, k, v, allowed, *, stable=False):
+def masked_attention(q, k, v, allowed, *, stable=False, sink_logits=None):
     scores = (q @ k.transpose(-2, -1)) / math.sqrt(q.shape[-1])
     scores = scores.masked_fill(~allowed, float("-inf"))
+    if sink_logits is not None:
+        sink = sink_logits[None, :, None, None].expand(*scores.shape[:-1], 1)
+        scores = torch.cat((scores, sink), dim=-1)
     weights = stable_softmax(scores) if stable else F.softmax(scores, dim=-1)
+    if sink_logits is not None:
+        weights = weights[..., :-1]
     return weights @ v
+
+
+def rotary_queries_and_keys(q, k):
+    """Rotate adjacent channel pairs by position-dependent angles (RoFormer)."""
+    head_size = q.shape[-1]
+    positions = torch.arange(q.shape[-2], device=q.device, dtype=torch.float32)
+    frequencies = 10000.0 ** (
+        -torch.arange(0, head_size, 2, device=q.device, dtype=torch.float32) / head_size)
+    angles = positions[:, None] * frequencies
+    cos, sin = angles.cos().to(q.dtype), angles.sin().to(q.dtype)
+
+    def rotate(x):
+        even, odd = x[..., ::2], x[..., 1::2]
+        return torch.stack((even * cos - odd * sin, even * sin + odd * cos),
+                           dim=-1).flatten(-2)
+
+    return rotate(q), rotate(k)
 
 
 class CausalSelfAttention(nn.Module):
@@ -28,13 +50,17 @@ class CausalSelfAttention(nn.Module):
         super().__init__()
         self.n_heads = config.n_heads
         self.stable_softmax = config.stable_softmax
+        self.use_rope = config.position_encoding == "rope"
+        if config.attention_sinks:
+            self.sink_logits = nn.Parameter(torch.zeros(config.n_heads))
         self.qkv = nn.Linear(config.d_model, 3 * config.d_model)
         self.proj = nn.Linear(config.d_model, config.d_model)
 
     def attend(self, q, k, v):
         positions = torch.arange(q.shape[2], device=q.device)
         return masked_attention(q, k, v, positions[:, None] >= positions[None, :],
-                                stable=self.stable_softmax)
+                                stable=self.stable_softmax,
+                                sink_logits=getattr(self, "sink_logits", None))
 
     def forward(self, x):
         batch, length, width = x.shape
@@ -42,6 +68,8 @@ class CausalSelfAttention(nn.Module):
         q, k, v = self.qkv(x).chunk(3, dim=-1)
         q, k, v = [a.reshape(batch, length, self.n_heads, head_size).transpose(1, 2)
                    for a in (q, k, v)]
+        if self.use_rope:
+            q, k = rotary_queries_and_keys(q, k)
         attended = self.attend(q, k, v)
         attended = attended.transpose(1, 2).contiguous().view(batch, length, width)
         return self.proj(attended)
@@ -65,7 +93,8 @@ class SlidingWindowAttention(CausalSelfAttention):
             distance = query_positions[:, None] - key_positions[None, :]
             allowed = (distance >= 0) & (distance < self.window_size)
             tiles.append(masked_attention(q[:, :, start:end], k[:, :, key_start:end],
-                                          v[:, :, key_start:end], allowed, stable=self.stable_softmax))
+                                          v[:, :, key_start:end], allowed, stable=self.stable_softmax,
+                                          sink_logits=getattr(self, "sink_logits", None)))
         return torch.cat(tiles, dim=2)
 
 

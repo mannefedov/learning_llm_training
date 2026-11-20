@@ -3,6 +3,7 @@
 import hashlib
 from importlib.metadata import version
 import json
+import shutil
 import time
 from pathlib import Path
 
@@ -35,7 +36,8 @@ def open_cache(directory: Path, identity: dict):
 
 
 def prepare_cache(directory: Path, data_config: dict, tokenizer_path: Path,
-                  eos_token: str, train_token_limit: int, *, allow_short_train: bool = False):
+                  eos_token: str, train_token_limit: int, *, allow_short_train: bool = False,
+                  after_cache: Path | None = None):
     """Write documents until the fixed training token budget is filled.
 
     The last training document may be truncated; validation uses its document
@@ -62,6 +64,27 @@ def prepare_cache(directory: Path, data_config: dict, tokenizer_path: Path,
     if eos_id is None:
         raise ValueError(f"Tokenizer has no EOS token {eos_token!r}")
     source = dict(data_config)
+    skip = source.pop("train_skip_documents", 0)
+    if type(skip) is not int or skip < 0 or bool(skip) != (after_cache is not None):
+        raise ValueError("A positive train_skip_documents requires the preceding cache")
+    if after_cache is not None:
+        previous_train, _, previous = open_cache(
+            after_cache, cache_identity(source, tokenizer_path, eos_token))
+        if source.get("shuffle_buffer_size", 100) != 0 or skip != previous["train"]["documents"]:
+            raise ValueError("Continuation cache must follow the preceding cache's unshuffled documents")
+        if not previous["train"]["last_document_truncated"]:
+            raise ValueError("Continuation preparation needs a truncated boundary document to verify")
+        # Find the start of the final, partially cached document without loading
+        # the preceding corpus into memory.
+        end = previous_train.size
+        while end:
+            start = max(0, end - 65536)
+            boundaries = np.flatnonzero(previous_train[start:end] == eos_id)
+            if boundaries.size:
+                end = start + int(boundaries[-1]) + 1
+                break
+            end = start
+        boundary_prefix = previous_train[end:]
     train_split = source.pop("train_split")
     val_split = source.pop("val_split")
     train_documents = source.pop("train_documents")
@@ -73,6 +96,10 @@ def prepare_cache(directory: Path, data_config: dict, tokenizer_path: Path,
     directory.mkdir(parents=True)
     manifest = {"identity": identity}
     for name, split, limit in (("train", train_split, train_documents), ("val", val_split, val_documents)):
+        if name == "val" and after_cache is not None:
+            shutil.copyfile(after_cache / "val.bin", directory / "val.bin")
+            manifest["val"] = previous["val"]
+            continue
         count = documents = 0
         truncated = False
         token_limit = train_token_limit if name == "train" else None
@@ -81,6 +108,17 @@ def prepare_cache(directory: Path, data_config: dict, tokenizer_path: Path,
               + (f", stopping at {token_limit:,} tokens" if token_limit else ""), flush=True)
         texts = iter_dataset_texts(**source, split=split, num_documents=limit)
         try:
+            if name == "train" and after_cache is not None:
+                print(f"Skipping {skip:,} documents already used by the preceding cache", flush=True)
+                for index in range(1, skip + 1):
+                    text = next(texts, None)
+                    if text is None:
+                        raise ValueError("Dataset ended before the continuation boundary")
+                    if index % 250000 == 0:
+                        print(f"Skipped {index:,}/{skip:,} documents", flush=True)
+                ids = tokenizer.encode(text, add_special_tokens=False).ids
+                if not np.array_equal(boundary_prefix, ids[:boundary_prefix.size]):
+                    raise ValueError("Dataset boundary no longer matches the preceding token cache")
             with (directory / f"{name}.bin").open("xb") as file:
                 for text in texts:
                     ids = tokenizer.encode(text, add_special_tokens=False).ids

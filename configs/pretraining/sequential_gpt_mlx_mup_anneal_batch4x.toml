@@ -1,0 +1,71 @@
+# 4x batch anneal, 250 updates / 20.48M targets from the fresh cache.
+[data]
+train_skip_documents = 1538808
+dataset_id = "HuggingFaceFW/fineweb-2"
+subset = "rus_Cyrl"
+train_split = "train"
+val_split = "test"
+# Upper limit: preparation stops earlier when the token budget is full.
+train_documents = 20000000
+val_documents = 100
+seed = 42
+shuffle_buffer_size = 0
+# revision = "<dataset commit SHA>"
+
+[tokenizer]
+path = "artifacts/tokenization/fineweb2-rus-bpe-8k-02/tokenizer.json"
+eos_token = "<|endoftext|>"
+
+[model]
+parametrization = "mup"
+mup_base_width = 64
+attention_backend = "reference"
+stable_softmax = false
+# Vocabulary size comes from the actual tokenizer.
+context_length = 256
+n_layers = 4
+n_heads = 4
+d_model = 256
+
+[training]
+compile_step = true
+lr_schedule = "constant"
+sampling = "sequential"
+steps = 120000
+batch_size = 10
+gradient_accumulation_steps = 32
+learning_rate = 0.00078125  # Final base LR of the source checkpoint.
+weight_decay = 0.0  # Match the four-width sweep.
+grad_clip = 1.0
+eval_every = 31
+eval_batches = 10
+seed = 42
+device = "gpu"
+
+[statistics]
+every = 31
+probe_batches = 2
+activations = true
+logits = true
+gradient_noise_batches = 4
+gradient_noise_every = 155
+
+[checkpoint]
+every = 31
+keep = 1
+
+[generation]
+enabled = true
+every = 31
+prompts = ["Сегодня утром я", "В Москве сегодня"]
+max_new_tokens = 100
+temperature = 0.8
+seed = 42
+
+[cache]
+directory = "artifacts/data/fineweb2-rus-anneal-409m-tokens"
+after = "artifacts/data/fineweb2-rus-2b-tokens"
+train_tokens = 409600001
+
+[output]
+directory = "artifacts/pretraining/gpt-mlx-mup-width256-fresh-batch4x-01"
