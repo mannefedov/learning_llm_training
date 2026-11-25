@@ -107,7 +107,7 @@ class SlidingWindowAttention(CausalSelfAttention):
 def build_attention(config: GPTConfig, layer_index: int):
     if config.attention_architecture == "mla":
         from .mla_mlx import MultiHeadLatentAttention
-        return MultiHeadLatentAttention(config)
+        return MultiHeadLatentAttention(config, layer_index)
     kind = config.attention_type(layer_index)
     if kind == "full":
         return CausalSelfAttention(config)

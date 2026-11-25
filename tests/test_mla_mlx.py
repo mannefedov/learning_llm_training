@@ -127,10 +127,79 @@ class MLATests(unittest.TestCase):
                 restored.load_weights(str(path))
                 np.testing.assert_array_equal(np.array(model(tokens)[0]), np.array(restored(tokens)[0]))
 
+    def test_reference_window_and_chunked_latent_cache(self):
+        config = tiny_config(attention_types=["sliding_window", "full"], sliding_window=2)
+        layer = MultiHeadLatentAttention(config, 0)
+        self.assertIsNone(MultiHeadLatentAttention(config, 1).window_size)
+        x = mx.random.normal((2, 7, 16))
+        qc, qr, latent, kr = layer.project(x)
+        kv = layer.kv_up(latent).reshape(2, 7, 2, 8).transpose(0, 2, 1, 3)
+        kc, values = mx.split(kv, [3], axis=-1)
+        scores = (qc @ kc.swapaxes(-1, -2) + qr @ kr.swapaxes(-1, -2)) / 7**.5
+        distance = mx.arange(7)[:, None] - mx.arange(7)[None, :]
+        weights = mx.softmax(mx.where((distance >= 0) & (distance < 2), scores, -float("inf")), axis=-1)
+        np.testing.assert_allclose(np.array(layer(x)), np.array(layer.output(weights @ values)), atol=2e-6)
+        prefix, cache = layer.decode(x[:, :3])
+        suffix, _ = layer.decode(x[:, 3:], cache)
+        np.testing.assert_allclose(np.array(mx.concatenate((prefix, suffix), axis=1)),
+                                   np.array(layer(x)), rtol=2e-5, atol=2e-6)
+        changed = mx.concatenate((x[:, :1] + 7, x[:, 1:]), axis=1)
+        np.testing.assert_array_equal(np.array(layer(x)[:, 2:]), np.array(layer(changed)[:, 2:]))
+
+    @unittest.skipUnless(mx.metal.is_available(), "Requires Metal")
+    def test_fused_expanded_attention_outputs_and_gradients(self):
+        window_supported = "window_size" in (mx.fast.scaled_dot_product_attention.__doc__ or "")
+        for window in (None, 5):
+            if window is not None and not window_supported:
+                continue
+            for head_dim in (64, 128):
+                with self.subTest(window=window, head_dim=head_dim):
+                    options = dict(mla_qk_head_dim=head_dim//2, mla_rope_head_dim=head_dim//2,
+                                   mla_v_head_dim=head_dim)
+                    if window is not None:
+                        options.update(attention_types=["sliding_window", "full"], sliding_window=window)
+                    reference = MultiHeadLatentAttention(tiny_config(**options))
+                    fused = MultiHeadLatentAttention(tiny_config(**options,
+                        attention_backend="mlx_fused" if window is None else "mlx_fused_window"))
+                    fused.update(reference.parameters())
+                    x = mx.random.normal((2, 33, 16))
+                    ref_loss, ref_grads = nn.value_and_grad(reference, lambda a: mx.mean(reference(a)**2))(x)
+                    loss, grads = nn.value_and_grad(fused, lambda a: mx.mean(fused(a)**2))(x)
+                    np.testing.assert_allclose(np.array(fused(x)), np.array(reference(x)), atol=2e-4, rtol=3e-3)
+                    for (name, value), (_, expected) in zip(tree_flatten(grads), tree_flatten(ref_grads)):
+                        np.testing.assert_allclose(np.array(value), np.array(expected), atol=2e-4, rtol=3e-3,
+                                                   err_msg=name)
+
+    @unittest.skipUnless(mx.metal.is_available() and
+        "window_size" in (mx.fast.scaled_dot_product_attention.__doc__ or ""),
+        "Requires local windowed MLX build")
+    def test_compiled_mixed_window_flash_mla_moe(self):
+        config = tiny_config(context_length=33, mla_qk_head_dim=32, mla_rope_head_dim=32,
+                             mla_v_head_dim=64, attention_backend="mlx_fused_window",
+                             attention_types=["sliding_window", "full"], sliding_window=5,
+                             num_experts=4, expert_hidden_dim=16)
+        model = GPT(config)
+        tokens = mx.arange(33)[None] % config.vocab_size
+        optimizer = make_optimizer(TrainConfig(), config)
+        loss_and_grad = make_loss_and_grad(model, True)
+        for _ in range(2):
+            loss, grads = loss_and_grad(tokens, tokens)
+            optimizer.update(model, grads)
+            mx.eval(loss, model.parameters(), optimizer.state)
+            self.assertTrue(mx.isfinite(loss).item())
+            self.assertTrue(all(mx.isfinite(g).all().item() for _, g in tree_flatten(grads)))
+        self.assertEqual(model.generate(tokens[:, :1], 3, temperature=0).shape, (1, 4))
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "mixed.safetensors"
+            model.save_weights(str(path))
+            restored = GPT(config)
+            restored.load_weights(str(path))
+            np.testing.assert_array_equal(np.array(model(tokens)[0]), np.array(restored(tokens)[0]))
+
     def test_invalid_architecture_combinations(self):
         for fields in (dict(mla_kv_rank=0), dict(mla_rope_head_dim=3),
                        dict(position_encoding="learned"), dict(attention_sinks=True),
-                       dict(attention_types=["full", "sliding_window"], sliding_window=4),
+                       dict(attention_types=["full", "sliding_window"]),
                        dict(attention_backend="mlx_fused"),
                        dict(parametrization="mup", mup_base_width=8)):
             with self.subTest(fields=fields), self.assertRaises(ValueError):

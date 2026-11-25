@@ -165,8 +165,9 @@ balancing term. At statistics collection points, `probes.routing` records
 per-layer assignment counts, mean probabilities, entropy and balancing loss on
 the first fixed train probe.
 
-Experts use bias-free two-matrix GELU networks. `gather_mm` executes selected
-expert slots, and routing has no capacity limit or token dropping. With top-1,
+Experts use bias-free two-matrix GELU networks. Selected slots are sorted by
+expert before `gather_mm`, enabling memory-efficient segmented weight gradients.
+Routing has no capacity limit or token dropping. With top-1,
 the gate retains its full-softmax probability to preserve task gradients;
 with multiple choices the selected gates are normalized to sum to one.
 Benchmark actual throughput before treating increased sparsity as a speed gain.
@@ -194,5 +195,25 @@ standard parameterization, and dense FFNs. MoE FFNs can also be enabled.
 `MultiHeadLatentAttention.decode(chunk, cache)` exposes compressed-cache
 decoding at the attention-layer level. GPT generation currently recomputes its
 cropped context. The tutorial verifies expanded and cached outputs agree.
-This first version uses reference MLX operations and ordinary RoPE; μP,
-sliding windows and sinks are unsupported for MLA.
+MLA supports full and sliding-window layers with ordinary RoPE. Reference
+attention applies the window mask explicitly; `mlx_fused_window` uses the
+patched local MLX kernel. Fused MLA requires equal combined-QK/value head
+dimensions of 64 or 128. μP and attention sinks remain unsupported for MLA.
+Compressed decoding currently retains the whole prefix cache even in local layers.
+
+## GPT-2-scale MoE with MLA and fused attention
+
+Requires the patched `.local/venv-mlx-swa` environment and the prepared 2B cache:
+
+```sh
+MLX_ENABLE_TF32=0 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer PYTHONPATH=src \
+  .local/venv-mlx-swa/bin/python -m llm_training.pretraining_mlx \
+  --config configs/pretraining/sequential_gpt_mlx_moe_mla_gpt2_dims_2b.toml
+```
+
+The model matches the GPT-2 experiment's width, depth and context, with a
+similar total parameter count. Its four-expert/top-2 FFNs use hidden width
+1,024 per expert. MLA uses a shared KV latent, decoupled RoPE, and the same
+three-local/one-full pattern. The config controls the full-corpus token budget,
+warmup, stable phase and end decay. It starts fresh with standard parameterization.
+Results go to `artifacts/pretraining/gpt-mlx-moe-mla-gpt2-dims-swa32-flash-2b-*`.

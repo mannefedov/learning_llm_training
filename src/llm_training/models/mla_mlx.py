@@ -15,8 +15,15 @@ from .numerics_mlx import stable_softmax
 
 
 class MultiHeadLatentAttention(nn.Module):
-    def __init__(self, config: GPTConfig):
+    def __init__(self, config: GPTConfig, layer_index: int = 0):
         super().__init__()
+        self.backend = config.attention_backend
+        self.window_size = (config.sliding_window
+                            if config.attention_type(layer_index) == "sliding_window" else None)
+        if (self.window_size is not None and self.backend == "mlx_fused_window"
+                and "window_size" not in (mx.fast.scaled_dot_product_attention.__doc__ or "")):
+            raise ValueError("Windowed fused MLA requires the local patched MLX environment; "
+                             "use .local/venv-mlx-swa/bin/python")
         self.n_heads = config.n_heads
         self.kv_rank = config.mla_kv_rank
         self.content_dim = config.mla_qk_head_dim
@@ -53,8 +60,11 @@ class MultiHeadLatentAttention(nn.Module):
     def probabilities(self, scores, offset=0):
         query_positions = offset + mx.arange(scores.shape[-2])
         key_positions = mx.arange(scores.shape[-1])
-        scores = mx.where(query_positions[:, None] >= key_positions[None, :],
-                          scores * self.scale, -float("inf"))
+        distance = query_positions[:, None] - key_positions[None, :]
+        allowed = distance >= 0
+        if self.window_size is not None:
+            allowed = allowed & (distance < self.window_size)
+        scores = mx.where(allowed, scores * self.scale, -float("inf"))
         return stable_softmax(scores) if self.stable_softmax else mx.softmax(scores, axis=-1)
 
     def output(self, heads):
@@ -67,6 +77,16 @@ class MultiHeadLatentAttention(nn.Module):
         batch, length, _ = latent.shape
         kv = self.kv_up(latent).reshape(batch, length, self.n_heads, -1).transpose(0, 2, 1, 3)
         k_content, values = mx.split(kv, [self.content_dim], axis=-1)
+        if self.backend in ("mlx_fused", "mlx_fused_window"):
+            queries = mx.concatenate((q_content, q_rope), axis=-1)
+            keys = mx.concatenate((k_content, mx.broadcast_to(k_rope, q_rope.shape)), axis=-1)
+            options = {"window_size": self.window_size} if self.window_size is not None else {}
+            # The causal string mask selects MLX's fused backward path. The
+            # window is handled inside the patched kernel, not by a dense mask.
+            heads = mx.fast.scaled_dot_product_attention(
+                queries, keys, values, scale=self.scale, mask="causal",
+                force_fused=True, **options)
+            return self.output(heads)
         scores = q_content @ k_content.swapaxes(-2, -1) + q_rope @ k_rope.swapaxes(-2, -1)
         return self.output(self.probabilities(scores) @ values)
 
@@ -75,7 +95,9 @@ class MultiHeadLatentAttention(nn.Module):
 
         Cache belongs to the caller, contains activations only, and is valid
         while model weights remain fixed. offset is inferred from cached length.
-        This reference implementation concatenates chunks; it has no fused kernel.
+        This reference decoder concatenates chunks and applies the layer's
+        causal/window mask. It retains the entire cache; only training uses
+        the selected fused backend.
         """
         if cache is not None and len(cache) != 2:
             raise ValueError("MLA cache must contain latent and RoPE-key arrays")

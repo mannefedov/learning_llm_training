@@ -44,10 +44,12 @@ class GPTConfig:
                 raise ValueError("MLA requires position_encoding='rope'")
             if self.parametrization != "standard":
                 raise ValueError("The first MLA implementation supports standard parameterization")
-            if self.attention_backend != "reference" or self.attention_sinks:
-                raise ValueError("MLA currently requires reference attention without sinks")
-            if self.attention_types and any(t != "full" for t in self.attention_types):
-                raise ValueError("MLA currently supports full attention layers")
+            if self.attention_sinks:
+                raise ValueError("MLA currently does not support attention sinks")
+            if self.attention_backend in ("mlx_fused", "mlx_fused_window"):
+                qk_dim = self.mla_qk_head_dim + self.mla_rope_head_dim
+                if qk_dim not in (64, 128) or self.mla_v_head_dim != qk_dim:
+                    raise ValueError("Fused MLA requires equal QK/value head dimensions of 64 or 128")
         if type(self.num_experts) is not int or self.num_experts < 0:
             raise ValueError("num_experts must be a nonnegative integer (0 selects dense FFNs)")
         if type(self.experts_per_token) is not int or self.experts_per_token < 1:

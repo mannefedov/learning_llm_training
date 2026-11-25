@@ -35,15 +35,15 @@ def route_tokens(logits, top_k):
 
 
 class ExpertLinear(nn.Module):
-    """One weight matrix per expert, applied only to the selected token slots."""
+    """Apply expert matrices to rows sorted by their corresponding expert IDs."""
 
     def __init__(self, num_experts, input_dim, output_dim):
         super().__init__()
         self.weight = mx.random.normal((num_experts, output_dim, input_dim)) * 0.02
 
-    def __call__(self, x, token_indices, expert_indices):
+    def __call__(self, x, expert_indices):
         result = mx.gather_mm(x, self.weight.swapaxes(-1, -2),
-                              lhs_indices=token_indices, rhs_indices=expert_indices)
+                              rhs_indices=expert_indices, sorted_indices=True)
         return result
 
 
@@ -61,11 +61,16 @@ class SparseMoE(nn.Module):
         original_shape = x.shape
         flat = x.reshape(-1, original_shape[-1])
         indices, gates, diagnostics = route_tokens(self.router(flat), self.top_k)
-        # Each token is duplicated into k slots. We gather matrices, with no
-        # host-side routing loop, capacity limit, or dropped assignments.
-        token_indices = mx.broadcast_to(mx.arange(flat.shape[0])[:, None], indices.shape)
-        hidden = self.activation(self.up(flat[:, None, :], token_indices, indices))
-        slot_indices = mx.arange(indices.size).reshape(indices.shape)
-        expert_output = self.down(hidden.reshape(-1, 1, hidden.shape[-1]), slot_indices, indices)
-        mixed = mx.sum(expert_output[..., 0, :] * gates[..., None], axis=1)
+        # Pack selected slots by expert. MLX then uses segmented matrix
+        # products for weight gradients instead of one outer product per slot.
+        # Explicitly gather the inputs so the sorted flag applies to aligned
+        # input rows and expert IDs in both forward and backward.
+        order = mx.stop_gradient(mx.argsort(indices.reshape(-1)))
+        expert_indices = indices.reshape(-1)[order]
+        packed = flat[order // self.top_k, None, :]
+        hidden = self.activation(self.up(packed, expert_indices))
+        packed_output = self.down(hidden, expert_indices)
+        inverse = mx.stop_gradient(mx.argsort(order))
+        expert_output = packed_output[inverse].reshape(flat.shape[0], self.top_k, -1)
+        mixed = mx.sum(expert_output * gates[..., None], axis=1)
         return mixed.reshape(original_shape), diagnostics

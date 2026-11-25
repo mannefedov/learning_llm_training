@@ -36,3 +36,15 @@ Check camera navigation without a browser:
 ```sh
 node --test experiments/attention/viewer/camera.test.mjs
 ```
+
+Run two optimizer updates to check a larger config's local memory and speed:
+
+```sh
+MLX_ENABLE_TF32=0 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer PYTHONPATH=src \
+  .local/venv-mlx-swa/bin/python experiments/attention/probe_large_model.py \
+  --config configs/pretraining/sequential_gpt_mlx_moe_mla_gpt2_dims_2b.toml \
+  --output artifacts/benchmarks/moe-mla-gpt2-dims-feasibility.json
+```
+
+The probe uses the prepared cache and reports training-update timings and peak
+MLX memory. It excludes periodic validation, generation and statistics collection.

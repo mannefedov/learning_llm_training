@@ -1,5 +1,6 @@
 """Two real-data optimizer updates to measure large-model local feasibility."""
 
+import argparse
 import json
 from pathlib import Path
 from time import perf_counter
@@ -9,6 +10,7 @@ import mlx.core as mx
 import mlx.optimizers as optim
 from mlx.utils import tree_flatten
 import numpy as np
+from tokenizers import Tokenizer
 
 from llm_training.models.config import GPTConfig
 from llm_training.models.gpt_mlx import GPT
@@ -19,11 +21,18 @@ from llm_training.pretraining_mlx.train import (
 
 
 def main():
-    path = Path("configs/pretraining/sequential_gpt_mlx_mup_gpt2_dims_150m.toml")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path,
+                        default=Path("configs/pretraining/sequential_gpt_mlx_mup_gpt2_dims_150m.toml"))
+    parser.add_argument("--output", type=Path,
+                        default=Path("artifacts/benchmarks/gpt2-dims-feasibility.json"))
+    args = parser.parse_args()
+    path = args.config
     config = tomllib.loads(path.read_text())
     mx.set_default_device(mx.gpu)
     mx.random.seed(42)
-    model = GPT(GPTConfig(vocab_size=8000, **config["model"]))
+    vocab_size = Tokenizer.from_file(config["tokenizer"]["path"]).get_vocab_size()
+    model = GPT(GPTConfig(vocab_size=vocab_size, **config["model"]))
     training = TrainConfig(**config["training"])
     optimizer = make_optimizer(training, model.config)
     count = sum(p.size for _, p in tree_flatten(model.parameters()))
@@ -39,17 +48,18 @@ def main():
         optimizer.learning_rate = learning_rate_at_step(training, index + 1)
         optimizer.update(model, grads)
         mx.eval(model.parameters(), optimizer.state)
+        assert np.isfinite(loss) and mx.isfinite(norm).item()
         elapsed = perf_counter() - start
         timings.append(elapsed)
         print(json.dumps({"update": index + 1, "loss": loss, "seconds": elapsed,
-                          "tok_per_second": 20480 / elapsed}), flush=True)
+                          "tok_per_second": training.effective_batch_size * model.config.context_length / elapsed}), flush=True)
     report = {
         "config": str(path), "parameters": count, "update_seconds": timings,
         "peak_mlx_memory_gib": mx.get_peak_memory() / 2**30,
         "active_mlx_memory_gib": mx.get_active_memory() / 2**30,
-        "notes": "First update includes compilation. Another trainer was active. Two updates test feasibility, not convergence.",
+        "notes": "First update includes compilation. Two updates test feasibility, not convergence.",
     }
-    output = Path("artifacts/benchmarks/gpt2-dims-feasibility.json")
+    output = args.output
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report), flush=True)

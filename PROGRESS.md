@@ -2040,3 +2040,71 @@ Update this log before pushing work.
 - Training artifacts/caches/checkpoints and retired local archives remain
   ignored. Full training and sweeps remain user-run. Next:launch the prepared
   MLA512M continuation and inspect the MoE/MLA learning curves and routing stats.
+
+## 2026-11-20 — Prepare larger MLA on the 2B cache
+
+- Added sequential_gpt_mlx_mla_width128_2b.toml:two layers,width128,four heads,
+  doubled query/KV ranks and per-head content/RoPE/value dimensions. Parameter
+  count from matrix/norm dimensions is1,391,296. Fresh training required because
+  dimensions differ from width64 checkpoints.
+- Uses context256,microbatch16×accum5,100000updates/2.048Btargets,warmup250,
+  peakLR1e-3 held until80000 then cosine decay to1e-4. Retains diverse decoding
+  samples,statistics and protected stable checkpoint behavior.
+- Validated model/generation/schedule configs, endpoint LRs and token arithmetic.
+  Full training left for user; no GPU training or hyperparameter sweep launched.
+
+## 2026-11-20 — Prepare next MLA size: width256
+
+- Added sequential_gpt_mlx_mla_width256_2b.toml with width256,two layers,
+  four heads,query rank128,KV rank64,content/value dim64 and RoPE dim32.
+  Calculated3,511,680 total parameters. Model config validated against tokenizer.
+- Other sections exactly match width128:2.048Btargets,100000updates,250warmup,
+  peakLR1e-3,final20%cosine decay to1e-4. Fresh run; no checkpoint resizing.
+  Full training left for user; no GPU execution or LR sweep performed.
+
+## 2026-11-21 — GPT-2-scale MoE + MLA with flash-style SWA training
+
+- Added expanded-Q/K/V fused training to MLA using MLX SDPA, with equal
+  combined-QK/value dimensions64or128. Added per-layer sliding windows to
+  reference training and latent-cache decoding; mixed full/local patterns work.
+  Windowed fused training uses the patched local MLX API. Compressed decoding
+  still uses reference contractions and retains the prefix cache. MLA sinks
+  and μP remain unsupported; no architecture transfer claim is made.
+- Prepared sequential_gpt_mlx_moe_mla_gpt2_dims_2b.toml:12layers,width768,
+  12heads,context256,top2-of4 GELU experts with hidden1024,query rank256,
+  KV rank128,content32/RoPE32/value64. Total96,761,856parameters,approximately
+  59,013,120active-path parameters with shared embeddings included. Same total
+  size as our97.34M GPT-2-dimensions reference. Uses3local(SWA32):1full repeated,
+  standard parameterization,tied embeddings,MLX fused-window backend.
+- Fresh2.048Btoken run:100000updates,microbatch4×accum20,warmup1000,peak3e-4,
+  hold through80000 then cosine to3e-5. Eval/statistics/checkpoints every500,
+  gradient-noise probes every2500,and20decoding samples every1000updates.
+- Initial full-size two-update probe exposed unsorted gather_mm backward's
+  per-slot matrix intermediates:44.67GiB peak,49.89s second update(~410tok/s).
+  Changed MoE dispatch to sort expert slots,gather aligned input rows,call
+  sorted_indices=True,and undo the permutation before gate mixing. This enables
+  MLX segmented weight gradients while preserving selected-expert computation,
+  all assignments,parameter names and checkpoint compatibility.
+- Repeat real-cache probe at exact configured batch/accumulation:96,761,856
+  parameters,2.557s first update,1.793s second(~11,421tok/s),3.470GiB peak.
+  Finite losses/gradient norms; objective9.15758→9.15531. This excludes periodic
+  eval/generation/statistics and establishes feasibility only. Report under
+  artifacts/benchmarks/moe-mla-gpt2-dims-feasibility.json. Added config/output
+  arguments to the existing two-update probe so the measurement is repeatable.
+- Verification:all80tests passed in the patched MLX environment. Includes
+  fused64/128 output/gradient parity,window masks/chunked latent caches,
+  compiled mixed-window MLA+MoE updates,generation,checkpoint reload and dense
+  expert-reference parity. Executed all21MoE tutorial cells after updating the
+  dispatch walkthrough; memorization CE0.04354 and saved reload match.
+  Updated model/probe instructions and MLA tutorial scope. No full training
+  launched; user launch command uses MLX_ENABLE_TF32=0 to match verification.
+
+## 2026-11-25 — Commit and push MLA/MoE scaling work
+
+- Reviewed pending fused MLA/SWA support, expert-sorted MoE dispatch,
+  width128/256 and GPT-2-scale experiment configs, probe CLI and tutorial updates.
+- Validation recorded above:80tests passed in patched MLX;21MoE notebook cells
+  executed;full-size two-update feasibility probe completed at3.47GiB peak.
+  Rechecked changed Python/notebook syntax,TOML parsing and diff whitespace.
+- Training artifacts remain ignored. No additional training or sweeps launched
+  for this commit. Next work is analysis of the user-run architecture experiments.
